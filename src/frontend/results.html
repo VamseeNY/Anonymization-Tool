@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Results — Dicom Anonymization Tool</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+</head>
+<body data-show-logout="true" data-page="results">
+  <div id="sharedHeader"></div>
+
+  <main class="page-container">
+
+    <div class="page-header">
+      <h2>Processing Results</h2>
+      <p class="page-subtitle">Anonymization pipeline complete. Download outputs below.</p>
+    </div>
+
+    <!-- Meta strip -->
+    <div class="results-meta-strip" id="metaStrip"></div>
+
+    <!-- Result card -->
+    <div id="resultCard"></div>
+
+    <!-- Bottom CTA -->
+    <div style="text-align:center; margin-top:2rem;">
+      <a href="upload.html" class="btn btn-primary btn-lg">
+        <i class="fas fa-plus"></i> Process Another Scan
+      </a>
+    </div>
+
+  </main>
+
+  <div id="sharedFooter"></div>
+
+  <script src="assets/script.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+  <script>
+    requireAuth();
+
+    const raw = sessionStorage.getItem('pipelineResult');
+    if (!raw) window.location.replace('upload.html');
+    const data = JSON.parse(raw || '{}');
+
+    // ── Meta strip ──
+    (function buildMeta() {
+      const items = [
+        { key: 'Job ID',       val: data.jobId     || '—' },
+        { key: 'Status',       val: data.status    || '—' },
+        { key: 'Processed at', val: fmtTimestamp(data.timestamp) },
+      ];
+      document.getElementById('metaStrip').innerHTML = items.map(i => `
+        <div class="results-meta-item">
+          <span class="results-meta-key">${i.key}</span>
+          <span class="results-meta-val">${escapeHtml(i.val)}</span>
+        </div>
+      `).join('');
+    })();
+
+    // ── Result card ──
+    async function buildCard() {
+      const container = document.getElementById('resultCard');
+      const outputs   = data.outputs || {};
+      const jobId     = data.jobId;
+
+      const niftiUrl = outputs.nifti_url ? API_BASE + outputs.nifti_url : null;
+      const fhirUrl  = outputs.fhir_url  ? API_BASE + outputs.fhir_url  : null;
+
+      // NIfTI row
+      const niftiRow = niftiUrl ? `
+        <div class="result-file-row">
+          <i class="fas fa-file-medical result-file-icon"></i>
+          <div class="result-file-info">
+            <div class="result-file-name">Anonymized NIfTI volume</div>
+            <div class="result-file-size">.nii.gz — anonymized brain CT</div>
+          </div>
+          <a href="${escapeHtml(niftiUrl)}" download class="download-badge download-badge-nifti">
+            <i class="fas fa-download"></i> Download .nii.gz
+          </a>
+        </div>` : `
+        <div class="result-file-row">
+          <i class="fas fa-exclamation-triangle result-file-icon text-red"></i>
+          <div class="result-file-info">
+            <div class="result-file-name text-red">NIfTI not available</div>
+            <div class="result-file-size">Conversion may have failed — check pipeline logs.</div>
+          </div>
+        </div>`;
+
+      // FHIR row
+      const fhirRow = fhirUrl ? `
+        <div class="result-file-row">
+          <i class="fas fa-file-code result-file-icon"></i>
+          <div class="result-file-info">
+            <div class="result-file-name">FHIR R4 Bundle JSON</div>
+            <div class="result-file-size">.json — Patient, ImagingStudy, DiagnosticReport, Observations, DocumentReferences</div>
+          </div>
+          <a href="${escapeHtml(fhirUrl)}" download class="download-badge download-badge-fhir">
+            <i class="fas fa-download"></i> Download .json
+          </a>
+        </div>` : `
+        <div class="result-file-row">
+          <i class="fas fa-exclamation-triangle result-file-icon text-red"></i>
+          <div class="result-file-info">
+            <div class="result-file-name text-red">FHIR bundle not available</div>
+            <div class="result-file-size">Bundle may not have been generated — check pipeline logs.</div>
+          </div>
+        </div>`;
+
+      // FHIR JSON preview — fetch and render
+      let fhirPreviewHtml = '';
+      if (fhirUrl) {
+        try {
+          const res = await fetch(fhirUrl);
+          const bundle = await res.json();
+          const summary = summariseBundle(bundle);
+          fhirPreviewHtml = `
+            <div>
+              <div class="result-sub-label"><i class="fas fa-list"></i> Bundle Summary</div>
+              <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem;">
+                ${summary.map(s => `
+                  <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.75rem;font-size:0.78rem;">
+                    <span style="color:var(--text-muted);">${escapeHtml(s.type)}</span>
+                    <span style="color:var(--accent);font-weight:700;margin-left:0.4rem;">${s.count}</span>
+                  </div>`).join('')}
+              </div>
+              <div class="result-sub-label"><i class="fas fa-code"></i> FHIR R4 Bundle JSON</div>
+              <div class="json-preview-wrap">
+                <div class="json-preview-toolbar">
+                  <span class="json-preview-label">Anonymized FHIR R4 Transaction Bundle</span>
+                  <button class="json-copy-btn" onclick="copyJson()">Copy JSON</button>
+                </div>
+                <pre class="json-pre"><code class="language-json" id="fhirCode"></code></pre>
+              </div>
+            </div>`;
+        } catch {
+          fhirPreviewHtml = `<p style="color:var(--text-muted);font-size:0.85rem;">Could not load FHIR bundle for preview.</p>`;
+        }
+      }
+
+      container.innerHTML = `
+        <div class="result-scan-card">
+          <div class="result-scan-card-header">
+            <i class="fas fa-x-ray"></i>
+            Anonymized Output &mdash; <span style="font-family:var(--font-mono); font-size:0.85rem;">${escapeHtml(jobId)}</span>
+          </div>
+          <div class="result-scan-card-body">
+
+            <div>
+              <div class="result-sub-label"><i class="fas fa-file-medical"></i> NIfTI Output</div>
+              ${niftiRow}
+            </div>
+
+            <div>
+              <div class="result-sub-label"><i class="fas fa-code"></i> FHIR R4 Bundle</div>
+              ${fhirRow}
+            </div>
+
+            ${fhirPreviewHtml}
+
+            <div>
+              <div class="result-sub-label"><i class="fas fa-shield-alt"></i> Anonymization Summary</div>
+              <div style="display:flex;flex-direction:column;gap:0.4rem;">
+                ${[
+                  ['PII tags wiped', 'DICOM PS3.15 Annex E — 50+ tags cleared'],
+                  ['UIDs remapped', 'Deterministic SHA-256 remap — 2.25 OID arc'],
+                  ['Nested sequences', 'Recursive walk — all depths covered'],
+                  ['Pixel scrubbing', 'EasyOCR — burned-in text detected and zeroed'],
+                  ['PDF redacted', 'openai/privacy-filter — PII spans replaced'],
+                  ['FHIR standard', 'HL7 R4 — ABDM compliant'],
+                ].map(([k,v]) => `
+                  <div style="display:flex;gap:0.6rem;align-items:flex-start;padding:0.5rem 0.75rem;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;font-size:0.82rem;">
+                    <i class="fas fa-check-circle" style="color:var(--green);margin-top:0.15rem;flex-shrink:0;"></i>
+                    <div>
+                      <span style="font-weight:600;">${k}</span>
+                      <span style="color:var(--text-muted);margin-left:0.4rem;">${v}</span>
+                    </div>
+                  </div>`).join('')}
+              </div>
+            </div>
+
+          </div>
+        </div>`;
+
+      // Syntax highlight FHIR JSON
+      if (fhirUrl) {
+        try {
+          const res2 = await fetch(fhirUrl);
+          const bundle2 = await res2.json();
+          const codeEl = document.getElementById('fhirCode');
+          if (codeEl) {
+            codeEl.textContent = JSON.stringify(bundle2, null, 2);
+            if (window.Prism) Prism.highlightElement(codeEl);
+          }
+        } catch {}
+      }
+    }
+
+    function summariseBundle(bundle) {
+      const counts = {};
+      (bundle.entry || []).forEach(e => {
+        const t = e.resource?.resourceType || 'Unknown';
+        counts[t] = (counts[t] || 0) + 1;
+      });
+      return Object.entries(counts).map(([type, count]) => ({ type, count }));
+    }
+
+    function copyJson() {
+      const codeEl = document.getElementById('fhirCode');
+      if (!codeEl) return;
+      navigator.clipboard.writeText(codeEl.textContent).then(() => {
+        const btn = document.querySelector('.json-copy-btn');
+        if (!btn) return;
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      });
+    }
+
+    buildCard();
+  </script>
+</body>
+</html>

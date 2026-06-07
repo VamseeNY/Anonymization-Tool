@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload — Dicom Anonymization Tool</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body data-show-logout="true" data-page="upload">
+  <div id="sharedHeader"></div>
+
+  <main class="page-container">
+
+    <div class="page-header">
+      <h2 id="pageTitle">Upload Patient Scan</h2>
+      <p class="page-subtitle" id="pageSubtitle">Upload the DICOM folder and one PDF report, then start processing.</p>
+    </div>
+
+    <!-- ── Upload card ── -->
+    <div class="card" id="uploadCard">
+
+      <div class="form-group">
+        <p class="process-helper">
+          <i class="fas fa-info-circle"></i>
+          <span>Select a DICOM folder (all .dcm files) and a single radiology or lab report PDF. The pipeline will anonymize and convert them automatically.</span>
+        </p>
+      </div>
+
+      <!-- DICOM folder -->
+      <div class="upload-item" style="margin-top:1rem;">
+        <span class="upload-item-label">DICOM Folder</span>
+        <div class="file-drop" id="dropDicom">
+          <input
+            type="file"
+            id="inputDicom"
+            webkitdirectory
+            directory
+            multiple
+            onchange="onDicomSelect()"
+            aria-label="DICOM folder"
+          >
+          <i class="fas fa-folder-open file-drop-icon"></i>
+          <div class="file-drop-body">
+            <div class="file-drop-main file-drop-placeholder" id="textDicom">Select DICOM folder…</div>
+            <div class="file-drop-meta" id="metaDicom" style="display:none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PDF report -->
+      <div class="upload-item">
+        <span class="upload-item-label">Report PDF</span>
+        <div class="file-drop" id="dropPDF">
+          <input
+            type="file"
+            id="inputPDF"
+            accept=".pdf"
+            onchange="onPDFSelect()"
+            aria-label="Report PDF"
+          >
+          <i class="fas fa-file-pdf file-drop-icon"></i>
+          <div class="file-drop-body">
+            <div class="file-drop-main file-drop-placeholder" id="textPDF">Select PDF file…</div>
+            <div class="file-drop-meta" id="metaPDF" style="display:none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Process button -->
+      <div class="process-section">
+        <button id="processBtn" class="btn btn-primary btn-lg" disabled onclick="startProcessing()">
+          <i class="fas fa-play-circle"></i> Start Pipeline
+        </button>
+        <p class="process-helper" id="processHelper">
+          <i class="fas fa-info-circle"></i>
+          <span id="processHelperText">Upload a DICOM folder and a PDF report to continue.</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Pipeline progress (shown after submit) ── -->
+    <section id="pipelineSection" style="display:none;" class="pipeline-section">
+
+      <div class="pipeline-track">
+        <div class="pipeline-track-header">
+          <i class="fas fa-cogs"></i> Pipeline Progress
+          <span id="progressPct" style="margin-left:auto; font-size:0.9rem; color:var(--text); font-family:var(--font-mono);">0%</span>
+        </div>
+
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+
+        <div class="stage-list" id="stageList">
+          <div class="pipeline-stage" id="stg_read_dicom">
+            <span class="stage-dot"><i class="fas fa-check"></i></span>
+            <span class="stage-name">Read DICOM folder</span>
+          </div>
+          <div class="pipeline-stage" id="stg_anonymize_dicom">
+            <span class="stage-dot"><i class="fas fa-check"></i></span>
+            <span class="stage-name">Anonymize DICOM tags &amp; pixels</span>
+          </div>
+          <div class="pipeline-stage" id="stg_nifti">
+            <span class="stage-dot"><i class="fas fa-check"></i></span>
+            <span class="stage-name">Convert to NIfTI (.nii.gz)</span>
+          </div>
+          <div class="pipeline-stage" id="stg_pdf">
+            <span class="stage-dot"><i class="fas fa-check"></i></span>
+            <span class="stage-name">Extract &amp; anonymize PDF report</span>
+          </div>
+          <div class="pipeline-stage" id="stg_fhir">
+            <span class="stage-dot"><i class="fas fa-check"></i></span>
+            <span class="stage-name">Build FHIR R4 bundle JSON</span>
+          </div>
+          <div class="pipeline-stage" id="stg_done">
+            <span class="stage-dot"><i class="fas fa-check"></i></span>
+            <span class="stage-name">Complete</span>
+          </div>
+        </div>
+
+        <!-- Live message -->
+        <div id="liveMessage" style="margin-top:1rem; font-size:0.83rem; color:var(--text-muted); min-height:1.2rem;"></div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <div id="sharedFooter"></div>
+
+  <script src="assets/script.js"></script>
+  <script>
+    requireAuth();
+
+    // ── State ──
+    let dicomFiles = [];
+    let pdfFile    = null;
+
+    // ── Stage → SSE event stage name mapping ──
+    const STAGE_MAP = {
+      read_dicom:       'stg_read_dicom',
+      anonymize_dicom:  'stg_anonymize_dicom',
+      nifti:            'stg_nifti',
+      pdf:              'stg_pdf',
+      fhir:             'stg_fhir',
+      done:             'stg_done',
+      error:            null,
+    };
+
+    // ── File select handlers ──
+    function onDicomSelect() {
+      const input = document.getElementById('inputDicom');
+      const files = Array.from(input.files).filter(f => f.name.endsWith('.dcm'));
+      dicomFiles = files;
+      const drop  = document.getElementById('dropDicom');
+      const text  = document.getElementById('textDicom');
+      const meta  = document.getElementById('metaDicom');
+      if (files.length > 0) {
+        drop.classList.add('has-files');
+        const folder = (input.files[0].webkitRelativePath || '').split('/')[0] || 'Selected folder';
+        text.textContent = folder;
+        text.classList.remove('file-drop-placeholder');
+        meta.textContent = files.length + ' .dcm file' + (files.length !== 1 ? 's' : '');
+        meta.style.display = 'block';
+      } else {
+        drop.classList.remove('has-files');
+        text.textContent = 'Select DICOM folder…';
+        text.classList.add('file-drop-placeholder');
+        meta.style.display = 'none';
+      }
+      validate();
+    }
+
+    function onPDFSelect() {
+      const input = document.getElementById('inputPDF');
+      pdfFile = input.files[0] || null;
+      const drop = document.getElementById('dropPDF');
+      const text = document.getElementById('textPDF');
+      const meta = document.getElementById('metaPDF');
+      if (pdfFile) {
+        drop.classList.add('has-files');
+        text.textContent = pdfFile.name;
+        text.classList.remove('file-drop-placeholder');
+        meta.textContent = fmtBytes(pdfFile.size);
+        meta.style.display = 'block';
+      } else {
+        drop.classList.remove('has-files');
+        text.textContent = 'Select PDF file…';
+        text.classList.add('file-drop-placeholder');
+        meta.style.display = 'none';
+      }
+      validate();
+    }
+
+    function validate() {
+      const btn  = document.getElementById('processBtn');
+      const txt  = document.getElementById('processHelperText');
+      const hlp  = document.getElementById('processHelper');
+      if (dicomFiles.length === 0) {
+        btn.disabled = true;
+        hlp.classList.add('is-error');
+        txt.textContent = 'Upload a DICOM folder containing .dcm files to continue.';
+      } else if (!pdfFile) {
+        btn.disabled = true;
+        hlp.classList.add('is-error');
+        txt.textContent = 'Upload a PDF report to continue.';
+      } else {
+        btn.disabled = false;
+        hlp.classList.remove('is-error');
+        txt.textContent = `Ready — ${dicomFiles.length} DICOM files + ${pdfFile.name}`;
+      }
+    }
+
+    // ── Stage helpers ──
+    function setStage(id, state) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('is-active', 'is-done', 'is-error');
+      if (state) el.classList.add('is-' + state);
+    }
+
+    function setProgress(pct) {
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('progressPct').textContent = pct + '%';
+    }
+
+    function setLive(msg) {
+      document.getElementById('liveMessage').textContent = msg;
+    }
+
+    function setSubtitle(msg) {
+      document.getElementById('pageSubtitle').textContent = msg;
+    }
+
+    // ── Main pipeline start ──
+    async function startProcessing() {
+      if (dicomFiles.length === 0 || !pdfFile) return;
+
+      // Switch UI
+      document.getElementById('uploadCard').style.display = 'none';
+      document.getElementById('pipelineSection').style.display = 'block';
+      document.getElementById('pageTitle').textContent = 'Processing Scan';
+      setSubtitle('Uploading files and starting pipeline…');
+
+      // Mark first stage active immediately
+      setStage('stg_read_dicom', 'active');
+
+      // ── Upload via POST /jobs ──
+      let jobId;
+      try {
+        const formData = new FormData();
+        dicomFiles.forEach(f => formData.append('dicom_files', f));
+        formData.append('pdf_file', pdfFile);
+
+        const res = await fetch(API_BASE + '/jobs', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
+          throw new Error(err.detail || 'Upload failed');
+        }
+
+        const data = await res.json();
+        jobId = data.job_id;
+        setSubtitle('Job started — streaming progress…');
+
+      } catch (err) {
+        setSubtitle('Upload failed: ' + err.message);
+        Object.values(STAGE_MAP).filter(Boolean).forEach(id => setStage(id, 'error'));
+        setLive('Error: ' + err.message);
+        return;
+      }
+
+      // ── Stream SSE progress ──
+      const es = new EventSource(API_BASE + '/jobs/' + jobId + '/stream');
+      let lastStageId = null;
+
+      es.onmessage = (e) => {
+        let event;
+        try { event = JSON.parse(e.data); } catch { return; }
+
+        const { type, stage, message, progress } = event;
+
+        // Mark previous stage done, new stage active
+        const stageId = STAGE_MAP[stage];
+        if (stageId && stageId !== lastStageId) {
+          if (lastStageId) setStage(lastStageId, 'done');
+          if (type === 'progress') setStage(stageId, 'active');
+          lastStageId = stageId;
+        }
+
+        setProgress(progress || 0);
+        setLive(message || '');
+        setSubtitle(message || 'Running…');
+
+        if (type === 'complete') {
+          es.close();
+          // Mark all stages done
+          Object.values(STAGE_MAP).filter(Boolean).forEach(id => setStage(id, 'done'));
+          setProgress(100);
+          setSubtitle('Complete — fetching results…');
+
+          // Fetch status for download URLs then redirect
+          fetch(API_BASE + '/jobs/' + jobId + '/status')
+            .then(r => r.json())
+            .then(status => {
+              sessionStorage.setItem('pipelineResult', JSON.stringify({
+                jobId,
+                status: status.status,
+                outputs: status.outputs,
+                timestamp: new Date().toISOString(),
+              }));
+              setTimeout(() => { window.location.href = 'results.html'; }, 600);
+            })
+            .catch(() => {
+              setSubtitle('Pipeline complete but could not fetch results.');
+            });
+        }
+
+        if (type === 'error') {
+          es.close();
+          if (lastStageId) setStage(lastStageId, 'error');
+          setSubtitle('Pipeline failed: ' + message);
+          setLive('Error: ' + message);
+        }
+      };
+
+      es.onerror = () => {
+        es.close();
+        setSubtitle('Connection to server lost. Check if the API is running.');
+        if (lastStageId) setStage(lastStageId, 'error');
+      };
+    }
+  </script>
+</body>
+</html>

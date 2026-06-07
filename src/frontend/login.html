@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Dicom Anonymization Tool</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="auth-page">
+  <div id="sharedHeader"></div>
+
+  <main class="auth-shell">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-icon">
+          <i class="fas fa-brain"></i>
+        </div>
+        <h1 class="brand-name">Dicom Anonymization Tool</h1>
+        <p class="brand-tagline">Secure anonymized neuroimaging processing for Indian healthcare</p>
+      </div>
+
+      <form id="loginForm" onsubmit="handleLogin(event)" novalidate>
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input
+            type="text"
+            id="username"
+            class="form-input"
+            placeholder="Enter username"
+            autocomplete="username"
+            required
+          >
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <input
+            type="password"
+            id="password"
+            class="form-input"
+            placeholder="Enter password"
+            autocomplete="current-password"
+            required
+          >
+        </div>
+        <div id="loginError" class="form-error" style="display:none;" role="alert">
+          <i class="fas fa-exclamation-circle"></i>
+          Invalid username or password.
+        </div>
+        <div style="margin-top:1.25rem;">
+          <button type="submit" class="btn btn-primary btn-full btn-lg">
+            Sign In <i class="fas fa-arrow-right"></i>
+          </button>
+        </div>
+      </form>
+    </div>
+  </main>
+
+  <div id="sharedFooter"></div>
+
+  <script src="assets/script.js"></script>
+  <script>
+    if (sessionStorage.getItem('loggedIn') === 'true') {
+      window.location.replace('upload.html');
+    }
+
+    // DEMO ONLY — replace with real auth before production
+    function handleLogin(e) {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const errorEl  = document.getElementById('loginError');
+      if (username === 'admin' && password === 'admin123') {
+        sessionStorage.setItem('loggedIn', 'true');
+        window.location.href = 'upload.html';
+      } else {
+        errorEl.style.display = 'flex';
+        document.getElementById('password').value = '';
+        document.getElementById('password').focus();
+      }
+    }
+
+    ['username', 'password'].forEach(id => {
+      document.getElementById(id).addEventListener('input', () => {
+        document.getElementById('loginError').style.display = 'none';
+      });
+    });
+  </script>
+</body>
+</html>

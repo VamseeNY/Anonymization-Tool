@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dicom Anonymization Tool</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="landing-page">
+  <div id="sharedHeader"></div>
+
+  <main class="landing-redirect">
+    <section class="landing-redirect-card">
+      <div class="brand-icon" style="margin: 0 auto 1.5rem;">
+        <i class="fas fa-brain"></i>
+      </div>
+      <h1>Dicom Anonymization Tool</h1>
+      <p>
+        Secure anonymized neuroimaging processing for Indian healthcare.
+        DICOM to NIfTI conversion, PDF report extraction, and FHIR R4 generation
+        — all in one pipeline.
+      </p>
+      <a class="btn btn-primary btn-lg" href="login.html">
+        Sign In <i class="fas fa-arrow-right"></i>
+      </a>
+    </section>
+  </main>
+
+  <div id="sharedFooter"></div>
+
+  <script src="assets/script.js"></script>
+  <script>
+    if (sessionStorage.getItem('loggedIn') === 'true') {
+      setTimeout(() => { window.location.replace('upload.html'); }, 400);
+    }
+  </script>
+</body>
+</html>
