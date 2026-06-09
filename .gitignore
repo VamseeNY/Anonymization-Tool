@@ -1,5 +1,5 @@
 .venv
-
+src/jobs/
 /output/
 /Test-Data/
 __pycache__/
