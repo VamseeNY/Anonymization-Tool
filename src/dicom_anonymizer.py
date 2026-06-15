@@ -19,7 +19,11 @@ Design decisions
 
 - PatientName is replaced with "ANON-<anon_patient_id>".
   PatientID is replaced with the anon_patient_id.
-  PatientSex is kept (not PII by itself).
+  PatientSex is retained under PS3.15 E.3.7 (Retain Patient Characteristics Option).
+  Table E.1-1 action code for PatientSex is Z/D (replace or zero); retention requires
+  explicit invocation of E.3.7, which is declared in DeidentificationMethodCodeSequence
+  with code 113108. Sex is retained because it is required for image quantification
+  pipelines (e.g. PET SUV body-surface-area corrections).
   All other identity, date, and device tags are wiped (set to empty string).
 
 - Free-text tags (StudyDescription, AdditionalPatientHistory, etc.) are
@@ -61,10 +65,9 @@ import pydicom.uid
 from dicom_reader import DicomStudy, DicomSeries, DicomInstance
 from pixel_scrubber import (
     load_ocr_reader,
-    sample_series_for_burned_in,
     scrub_pixels,
 )
-
+import uuid as _uuid_mod 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Tag lists  (DICOM PS3.15 Annex E — Basic Application Level Confidentiality)
@@ -177,13 +180,28 @@ UID_TAGS_ALL: set[tuple[int, int]] = {
     (0x0008, 0x0058),  # FailedSOPInstanceUIDList
     (0x0088, 0x0140),  # StorageMediaFileSetUID
     (0x0008, 0x9123),  # CreatorVersionUID
-    (0x0018, 0xA001),  # ContributingEquipmentSequence — UID inside
-    (0x0008, 0x0096),  # ReferringPhysicianIdentificationSequence — UID inside
+    # NOTE: (0x0018,0xA001) ContributingEquipmentSequence and
+    # (0x0008,0x0096) ReferringPhysicianIdentificationSequence are SQ VR tags,
+    # not UID tags. They are handled by the SQ recursion branch in
+    # _walk_and_anonymize(). Their inner UIDs (e.g. ReferencedSOPInstanceUID)
+    # are already caught by entries above. Placing SQ tags here causes the
+    # UID remapping branch to call str() on a sequence object — a no-op at best.
 }
 
 # Patient identity tag constants for the recursive walker
 _TAG_PATIENT_NAME = (0x0010, 0x0010)
 _TAG_PATIENT_ID   = (0x0010, 0x0020)
+
+# Tags explicitly retained under PS3.15 E.3.7 (Retain Patient Characteristics Option).
+# PatientSex (0010,0040) action code in Table E.1-1 is Z/D (zero or replace).
+# Retaining it is permitted only when this option is declared.
+# It is retained here because sex is required for image quantification pipelines
+# (e.g. PET standardized uptake value corrections).
+# DeidentificationMethodCodeSequence must include the E.3.7 option code (113108)
+# if this tag is kept.
+RETAIN_PATIENT_CHARACTERISTICS_TAGS: set[tuple[int, int]] = {
+    (0x0010, 0x0040),  # PatientSex
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,7 +216,13 @@ def make_anon_uid(original_uid: str, salt: str = "pipeline-salt-v1") -> str:
     - Same input always produces the same output (no state needed).
     - Different inputs always produce different outputs (no collisions in practice).
     - Output is a valid DICOM UID: digits + dots, max 64 chars.
-    - Uses the 2.25. prefix which is the registered OID arc for UUID-derived UIDs.
+    - Uses the 2.25. prefix per DICOM PS3.5 B.2 / ITU-T X.667.
+
+    Implementation:
+    Uses UUID v5 (RFC 4122, name-based SHA-1) with a fixed namespace UUID
+    derived from the salt. UUID v5 produces a standards-compliant 128-bit UUID
+    whose decimal integer representation is valid under the 2.25. OID arc,
+    as required by ITU-T X.667 / ISO IEC 9834-8.
 
     Parameters
     ----------
@@ -213,10 +237,18 @@ def make_anon_uid(original_uid: str, salt: str = "pipeline-salt-v1") -> str:
     str
         A valid DICOM UID string, deterministically derived from original_uid.
     """
-    h = hashlib.sha256(f"{salt}:{original_uid}".encode()).hexdigest()
-    # Convert first 32 hex chars to a large integer, take up to 39 digits
-    numeric = str(int(h[:32], 16))[:39]
-    return f"2.25.{numeric}"
+    # Derive a stable namespace UUID from the salt using UUID v5 with
+    # the DNS namespace (a fixed, well-known UUID per RFC 4122).
+    namespace = _uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, salt)
+    # Derive the output UUID from the original UID within that namespace.
+    output_uuid = _uuid_mod.uuid5(namespace, original_uid)
+    # Convert to the 2.25. OID arc per ITU-T X.667:
+    # treat the 128-bit UUID integer as a decimal number, suppress leading zeros.
+    numeric = str(output_uuid.int)  # up to 39 digits, no leading zeros
+    uid = f"2.25.{numeric}"
+    # DICOM UIDs must not exceed 64 characters (PS3.5 section 9.1).
+    assert len(uid) <= 64, f"Generated UID exceeds 64 chars: {uid}"
+    return uid
 
 
 def build_uid_map(ds: pydicom.Dataset) -> dict[str, str]:
@@ -431,7 +463,8 @@ def _anonymize_dataset(
     """
     # 1–4. Recursively walk all tags at every depth — handles top-level tags
     #       and all nested sequence items in a single pass.
-    #       PatientSex (0010,0040) is not in any action list — kept as-is.
+    #       PatientSex (0010,0040) is in RETAIN_PATIENT_CHARACTERISTICS_TAGS
+    #       and kept under PS3.15 E.3.7 (Retain Patient Characteristics Option).
     _walk_and_anonymize(ds, anon_patient_id, redacted_free_texts, uid_map)
 
     # 5. Remap SOPInstanceUID per-instance — unique per file, not in uid_map
@@ -440,11 +473,62 @@ def _anonymize_dataset(
         ds[(0x0008, 0x0018)].value = make_anon_uid(orig_sop)
 
     # 6. Keep MediaStorageSOPInstanceUID in sync with new SOPInstanceUID
+    #    and clean remaining File Meta Information tags that may carry
+    #    device or institution identity (PS3.15 E.1.1 / PS3.10).
     if hasattr(ds, "file_meta") and ds.file_meta:
         meta_tag = (0x0002, 0x0003)
         if meta_tag in ds.file_meta:
             orig_meta = str(ds.file_meta[meta_tag].value).strip()
             ds.file_meta[meta_tag].value = make_anon_uid(orig_meta)
+
+        # ImplementationVersionName (0002,0013) — may identify the acquiring
+        # system's software version. Replace with pipeline identifier.
+        ds.file_meta[0x0002, 0x0013].value = "ANON-PIPELINE-V1" \
+            if (0x0002, 0x0013) in ds.file_meta else None
+
+        # SourceApplicationEntityTitle (0002,0016) — identifies the AE (device)
+        # that created the file. Remove to prevent device re-identification.
+        if (0x0002, 0x0016) in ds.file_meta:
+            del ds.file_meta[0x0002, 0x0016]
+
+        # PrivateInformationCreatorUID (0002,0100) and
+        # PrivateInformation (0002,0102) — implementation-specific private data.
+        for private_meta_tag in [(0x0002, 0x0100), (0x0002, 0x0102)]:
+            if private_meta_tag in ds.file_meta:
+                del ds.file_meta[private_meta_tag]
+
+    # 7. Stamp mandatory PS3.15 conformance tags (E.1.1).
+    #    PatientIdentityRemoved (0012,0062) — required by the standard; value must be "YES".
+    ds.PatientIdentityRemoved = "YES"
+
+    # 8. DeidentificationMethodCodeSequence (0012,0064) — declares which profile
+    #    and options were applied, using codes from DICOM CID 7050.
+    #    113100 = Basic Application Level Confidentiality Profile
+    #    113101 = Clean Pixel Data Option
+    #    113105 = Clean Descriptors Option
+    deid_item = pydicom.Dataset()
+    deid_item.CodeValue = "113100"
+    deid_item.CodingSchemeDesignator = "DCM"
+    deid_item.CodeMeaning = "Basic Application Level Confidentiality Profile"
+
+    deid_item_pixel = pydicom.Dataset()
+    deid_item_pixel.CodeValue = "113101"
+    deid_item_pixel.CodingSchemeDesignator = "DCM"
+    deid_item_pixel.CodeMeaning = "Clean Pixel Data Option"
+
+    deid_item_desc = pydicom.Dataset()
+    deid_item_desc.CodeValue = "113105"
+    deid_item_desc.CodingSchemeDesignator = "DCM"
+    deid_item_desc.CodeMeaning = "Clean Descriptors Option"
+
+    deid_item_pat = pydicom.Dataset()
+    deid_item_pat.CodeValue = "113108"
+    deid_item_pat.CodingSchemeDesignator = "DCM"
+    deid_item_pat.CodeMeaning = "Retain Patient Characteristics Option"
+
+    ds.DeidentificationMethodCodeSequence = pydicom.Sequence(
+        [deid_item, deid_item_pixel, deid_item_desc, deid_item_pat]
+    )
 
     return ds
 
@@ -546,17 +630,14 @@ def anonymize_study(
         print(f"  ...{orig[-20:]:>22}  ->  {anon}")
     print()
 
-    # ── Sample first 3 instances to check for burned-in text ──
-    print("[INFO] Sampling first 3 slices for burned-in text ...")
-    sample_ds_list = []
-    for inst in all_instances[:3]:
-        sample_ds_list.append(pydicom.dcmread(str(inst.path), force=True))
-
-    run_ocr = sample_series_for_burned_in(sample_ds_list, ocr_reader)
-    if run_ocr:
-        print("[INFO] Burned-in text detected in sample — OCR will run on all slices.")
-    else:
-        print("[INFO] No burned-in text in sample — skipping OCR for remaining slices.")
+    # ── OCR runs on every instance unconditionally ──
+    # PS3.15 E.3.1 (Clean Pixel Data Option) requires that identifying
+    # information is removed from pixel data regardless of how that is achieved.
+    # Sampling only a subset of slices is non-compliant because burned-in
+    # annotations may appear on specific frames (e.g. calibration slices,
+    # last frame of a cine) not present in any fixed-size sample.
+    run_ocr = True
+    print("[INFO] OCR pixel scrubbing will run on all slices (PS3.15 E.3.1).")
     print()
 
     # ── Loop: apply to every instance ──
@@ -573,6 +654,7 @@ def anonymize_study(
         if run_ocr:
             scrub_pixels(ds, ocr_reader, wc, ww)
         # Output filename = new SOPInstanceUID (no original info in filename)
+        ds.BurnedInAnnotation = "NO"  # PS3.15 E.3.1 mandatory flag
         new_sop_uid = str(ds.SOPInstanceUID)
         out_filename = f"{new_sop_uid}.dcm"
         out_path = output_path / out_filename
