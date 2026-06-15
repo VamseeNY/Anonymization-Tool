@@ -132,19 +132,30 @@ Patient identity, dates/times, device identifiers, and institutional information
 `StudyTime`, `SeriesTime`, `AcquisitionTime`, `ContentTime`, scheduling tags,
 admission tags, request attribute tags, and others per PS3.15 Annex E.
 
+Conformance declaration tags stamped on every output instance:
+
+PatientIdentityRemoved (0012,0062) → set to "YES" (mandatory per PS3.15 E.1.1)  
+DeidentificationMethodCodeSequence (0012,0064) → populated with CID 7050 codes  
+declaring the applied profile and options:  
+  113100 — Basic Application Level Confidentiality Profile  
+  113101 — Clean Pixel Data Option  
+  113105 — Clean Descriptors Option  
+
 **Replaced with pseudonym:**
 - `PatientName` → `ANON-{anon_patient_id}`
 - `PatientID` → `{anon_patient_id}`
 - `PatientSex` is kept (not directly identifying alone)
 
 **UIDs remapped deterministically:**
-All DICOM UIDs are replaced using SHA-256(`salt:original_uid`) mapped to the `2.25.` OID arc (the registered OID arc for UUID-derived UIDs per ITU-T X.667):
+All DICOM UIDs are replaced using UUID v5 (RFC 4122 name-based SHA-1) mapped to the 2.25. OID arc (the registered OID arc for UUID-derived UIDs per ITU-T X.667 / ISO IEC 9834-8 / DICOM PS3.5 B.2).  
+A stable namespace UUID is first derived from the pipeline salt using UUID v5 with the IETF DNS namespace. The output UID for each original UID is then UUID v5 (namespace=salt-derived UUID, name=original_uid). The 128-bit UUID integer is converted to decimal and prepended with "2.25." per the ITU-T X.667 encoding rule. This produces a standards-conformant OID under the 2.25. arc, unlike a raw SHA-256 truncation which is not a valid UUID:  
 - `StudyInstanceUID` — same new UID across all files in the study
 - `SeriesInstanceUID` — same new UID across all files in the series
 - `SOPInstanceUID` — unique new UID per instance (remapped per-file in the write loop)
 - `FrameOfReferenceUID`, `InstanceCreatorUID`, `SynchronizationFrameOfReferenceUID`
 - `MediaStorageSOPInstanceUID` in file meta header
 - `ReferencedSOPInstanceUID`, `DimensionOrganizationUID` and others inside nested sequences
+- SQ-typed tags (ContributingEquipmentSequence, ReferringPhysicianIdentificationSequence) are not placed in the UID set — they are handled by the recursive SQ walker, which descends into them and remaps their inner UID tags individually.
 
 **Free-text tags** (`StudyDescription`, `SeriesDescription`, `AdditionalPatientHistory`, `PatientComments`, `ImageComments`, `StudyComments`) are run through `openai/privacy-filter` to detect and replace incidental PII with `[ENTITY_TYPE]` tokens.
 
@@ -154,7 +165,12 @@ A recursive walker (`_walk_and_anonymize`) traverses every element at every dept
 **Key design decisions:**
 - Anonymization values (new UIDs, redacted free-text) are computed **once from the first instance** then stamped identically across all instances. This ensures consistency — all 160 slices share the same new `StudyInstanceUID`.
 - UID generation is **deterministic** — same input always produces the same output UID. Re-running the pipeline on the same data produces identical anonymized UIDs.
-- Output filenames use the new anonymized `SOPInstanceUID` — no original identifiers appear in filenames.
+- Output filenames use the new anonymized `SOPInstanceUID` — no original identifiers appear in filenames.  
+  File Meta Information is partially cleaned per PS3.15 E.1.1 / PS3.10:  
+  MediaStorageSOPInstanceUID (0002,0003) is remapped to match the new SOPInstanceUID.  
+  ImplementationVersionName (0002,0013) is replaced with "ANON-PIPELINE-V1".  
+  SourceApplicationEntityTitle (0002,0016) is removed (identifies the acquiring device).  
+  PrivateInformationCreatorUID (0002,0100) and PrivateInformation (0002,0102) are removed. The 128-byte preamble is left as-is by pydicom's save_as(); it does not carry structured PHI in standard DICOM files but should be zeroed in high-assurance deployments.
 - A `sop_uid_to_filename` mapping is returned in `anon_result` so downstream stages (NIfTI conversion) can reliably locate anonymized files regardless of UID truncation differences between DICOM implementations.
 
 ---
@@ -165,13 +181,14 @@ Detects and zero-fills burned-in patient annotations in DICOM pixel data using E
 
 **Why needed:** Some modalities (ultrasound, mammography, secondary capture) burn patient name, MRN, and date directly into the pixel data as rendered text. Tag-level anonymization does not touch pixel data, so a separate OCR pass is required.
 
-**Sampling strategy:** OCR is run on the first 3 slices of each series. If no text is detected in any of the 3 samples, the remaining slices are skipped — the study is assumed clean. If text is found in any sample slice, OCR runs on every instance.
+**Sampling strategy:** OCR runs on every instance unconditionally. PS3.15 E.3.1 (Clean Pixel Data Option) requires that identifying information is removed from pixel data regardless of how that is achieved — no sampling exemption exists in the standard. Burned-in annotations may appear only on specific frames (e.g. calibration slices, first or last frame of a cine loop) that would not be caught by a fixed-size sample.
 
 **Pixel processing pipeline:**
 - Raw DICOM pixel array (any bit depth) is windowed to 8-bit greyscale using `WindowCenter`/`WindowWidth` from the DICOM tags (DICOM PS3.3 C.7.6.3.1.2 linear windowing formula)
 - EasyOCR runs on the full 8-bit frame
 - Detections with confidence ≥ 0.5 are accepted; each bounding box is expanded by 5px padding
 - Zero-fill rectangles are applied to the **original** pixel array (not the 8-bit display image), preserving the native bit depth
+- BurnedInAnnotation (0028,0301) is set to "NO" on every instance after scrubbing, as required by PS3.15 E.3.1 (Clean Pixel Data Option), regardless of whether OCR detected any text.
 - Multi-frame DICOM (e.g. ultrasound cines) is handled frame by frame
 
 **Integration:** The EasyOCR reader is loaded once at pipeline startup and passed to `anonymize_study()`. Per-instance scrubbing runs inside the anonymizer write loop, after tag anonymization and before `dcmwrite()`.
