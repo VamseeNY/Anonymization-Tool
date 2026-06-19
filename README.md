@@ -140,11 +140,12 @@ declaring the applied profile and options:
   113100 — Basic Application Level Confidentiality Profile  
   113101 — Clean Pixel Data Option  
   113105 — Clean Descriptors Option  
+  113108 — Retain Patient Characteristics Option (PatientSex retained)  
 
 **Replaced with pseudonym:**
 - `PatientName` → `ANON-{anon_patient_id}`
 - `PatientID` → `{anon_patient_id}`
-- `PatientSex` is kept (not directly identifying alone)
+- PatientSex is retained under PS3.15 E.3.7 (Retain Patient Characteristics Option). Table E.1-1 action code for PatientSex is Z/D (zero or replace); retention requires explicit invocation of E.3.7. Sex is retained because it is required for image quantification pipelines (e.g. PET SUV body-surface-area corrections). Code 113108 is included in DeidentificationMethodCodeSequence to declare this option.
 
 **UIDs remapped deterministically:**
 All DICOM UIDs are replaced using UUID v5 (RFC 4122 name-based SHA-1) mapped to the 2.25. OID arc (the registered OID arc for UUID-derived UIDs per ITU-T X.667 / ISO IEC 9834-8 / DICOM PS3.5 B.2).  
