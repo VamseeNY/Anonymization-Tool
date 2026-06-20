@@ -145,7 +145,7 @@ declaring the applied profile and options:
 **Replaced with pseudonym:**
 - `PatientName` → `ANON-{anon_patient_id}`
 - `PatientID` → `{anon_patient_id}`
-- PatientSex is retained under PS3.15 E.3.7 (Retain Patient Characteristics Option). Table E.1-1 action code for PatientSex is Z/D (zero or replace); retention requires explicit invocation of E.3.7. Sex is retained because it is required for image quantification pipelines (e.g. PET SUV body-surface-area corrections). Code 113108 is included in DeidentificationMethodCodeSequence to declare this option.
+- PatientSex is retained under PS3.15 E.3.7 (Retain Patient Characteristics Option). Table E.1-1 action code for PatientSex is Z (replace with zero-length value) under the Basic Profile, and K (keep) under the Retain Patient Characteristics Option; retention requires explicit invocation of E.3.7. Sex is retained because it is required for image quantification pipelines (e.g. PET SUV body-surface-area corrections), and downstream subgroup analysis. Code 113108 is included in DeidentificationMethodCodeSequence to declare this option.
 
 **UIDs remapped deterministically:**
 All DICOM UIDs are replaced using UUID v5 (RFC 4122 name-based SHA-1) mapped to the 2.25. OID arc (the registered OID arc for UUID-derived UIDs per ITU-T X.667 / ISO IEC 9834-8 / DICOM PS3.5 B.2).  
@@ -185,7 +185,7 @@ Detects and zero-fills burned-in patient annotations in DICOM pixel data using E
 **Sampling strategy:** OCR runs on every instance unconditionally. PS3.15 E.3.1 (Clean Pixel Data Option) requires that identifying information is removed from pixel data regardless of how that is achieved — no sampling exemption exists in the standard. Burned-in annotations may appear only on specific frames (e.g. calibration slices, first or last frame of a cine loop) that would not be caught by a fixed-size sample.
 
 **Pixel processing pipeline:**
-- Raw DICOM pixel array (any bit depth) is windowed to 8-bit greyscale using `WindowCenter`/`WindowWidth` from the DICOM tags (DICOM PS3.3 C.7.6.3.1.2 linear windowing formula)
+- Raw DICOM pixel array (any bit depth) is windowed to 8-bit greyscale using WindowCenter/WindowWidth from the DICOM tags (DICOM PS3.3 C.11.2.1.2 linear windowing formula, VOI LUT Module)
 - EasyOCR runs on the full 8-bit frame
 - Detections with confidence ≥ 0.5 are accepted; each bounding box is expanded by 5px padding
 - Zero-fill rectangles are applied to the **original** pixel array (not the 8-bit display image), preserving the native bit depth
@@ -485,7 +485,7 @@ pip install \
 | IHE AIW-I | Current | AI imaging workflow — NIfTI via DocumentReference |
 | LOINC | Current | Clinical terminology codes for study types and findings |
 | ITU-T X.667 / 2.25 OID arc | Current | UID generation for anonymized DICOM UIDs |
-| DICOM PS3.3 C.7.6.3.1.2 | Current | Linear windowing formula for pixel display |
+| DICOM PS3.3 C.11.2.1.2 | Current | Linear windowing formula for pixel display (VOI LUT Module) |
 
 ---
 
