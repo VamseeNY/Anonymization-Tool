@@ -153,6 +153,26 @@ def _pixel_array_to_8bit(
     return arr
 
 
+def has_pixel_data(ds: pydicom.Dataset) -> bool:
+    """
+    True if this dataset actually carries a pixel-data element (Pixel
+    Data, Float Pixel Data, or Double Float Pixel Data — the three tags
+    ds.pixel_array can decode).
+
+    Many valid DICOM SOP classes carry no pixel data at all —
+    Presentation States, Structured Reports, Key Object Selection
+    documents, RT Structure Sets/Plans, spatial registrations,
+    encapsulated PDFs, waveforms, etc. — and a study can legitimately
+    mix these in with real image series. Checking for the tag directly
+    is the correct, future-proof test: it works for any object type
+    (present or yet to be invented) with no allowlist of non-image SOP
+    Class UIDs to maintain, unlike trying to decode pixels and catching
+    the failure (noisy — one warning per instance) or keying off
+    Modality/SOPClassUID (an extra lookup that still needs a list).
+    """
+    return any(tag in ds for tag in ("PixelData", "FloatPixelData", "DoubleFloatPixelData"))
+
+
 def _get_pixel_frames(ds: pydicom.Dataset) -> list[np.ndarray]:
     """
     Return a list of 2D pixel arrays — one per frame.
@@ -261,7 +281,33 @@ def _write_pixel_frames_back(
     """
     Write modified pixel frames back to the DICOM dataset's PixelData.
     Handles both single-frame and multi-frame cases.
+
+    If the source file uses a COMPRESSED transfer syntax (JPEG2000,
+    JPEG-LS, RLE, etc. — common for MR, less so for CT, hence this only
+    showing up on some modalities), ds.pixel_array already transparently
+    decompressed it to build `frames` — but writing that decompressed
+    data back as PixelData while file_meta.TransferSyntaxUID still
+    claims "compressed" produces a dataset pydicom's writer correctly
+    rejects ("hasn't been encapsulated as required for a compressed
+    transfer syntax"). Re-encoding to the original codec would need a
+    codec-specific encoder we don't have (and don't want to add just for
+    this); instead, switch to an uncompressed transfer syntax and write
+    native pixel bytes — always writable, and a strictly safe operation
+    for a de-identification pipeline (larger files, but identical pixel
+    values; NIfTI conversion and everything downstream reads pixel
+    values, not the transfer syntax).
+
+    Only touches the transfer syntax when pixel data actually changed —
+    an instance with no burned-in text detected keeps its original
+    (possibly compressed) encoding untouched, so the vast majority of
+    files aren't affected by this at all.
     """
+    if ds.file_meta.TransferSyntaxUID.is_compressed:
+        from pydicom.uid import ExplicitVRLittleEndian
+        ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds.is_little_endian = True
+        ds.is_implicit_VR = False
+
     if len(frames) == 1:
         ds.PixelData = frames[0].tobytes()
     else:
@@ -321,12 +367,13 @@ def scrub_pixels(
     reader,
     window_center: Optional[float] = None,
     window_width: Optional[float] = None,
+    force_uncompressed: bool = False,
 ) -> bool:
     """
     Detect and zero-fill burned-in text annotations in a DICOM instance.
 
     Modifies ds.PixelData in-place. If no text is detected, the dataset
-    is unchanged.
+    is unchanged UNLESS force_uncompressed is set.
 
     Parameters
     ----------
@@ -340,11 +387,24 @@ def scrub_pixels(
     window_width : float, optional
         If provided, used for 8-bit conversion. If None, extracted from
         ds.WindowWidth.
+    force_uncompressed : bool, optional
+        If True, normalize to an uncompressed transfer syntax even when
+        THIS instance has nothing to scrub. The scrub/no-scrub decision
+        is normally made per-series (sample_series_for_burned_in), so
+        some instances in a scrubbed series may individually have
+        nothing detected — without this, those would keep their
+        original (possibly compressed) transfer syntax while their
+        scrubbed siblings become uncompressed, leaving the series with
+        MIXED transfer syntaxes that tools expecting one consistent
+        encoding per series (e.g. dicom2nifti) can mishandle. Pass
+        force_uncompressed=run_ocr from the caller so a whole series
+        that gets scrubbed comes out consistently encoded.
 
     Returns
     -------
     bool
-        True if any text regions were found and zeroed.
+        True if any text regions were found and zeroed (independent of
+        whether force_uncompressed also normalized the encoding).
         False if the image was clean.
     """
     # Use provided window params or extract from dataset
@@ -376,7 +436,7 @@ def scrub_pixels(
 
         modified_frames.append(frame)
 
-    if any_scrubbed:
+    if any_scrubbed or force_uncompressed:
         _write_pixel_frames_back(ds, modified_frames)
 
     return any_scrubbed

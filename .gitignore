@@ -2,5 +2,8 @@
 src/jobs/
 /output/
 /Test-Data/
+src/pdf_templates/
 __pycache__/
 *.pyc
+src/sessions/
+.DS_Store

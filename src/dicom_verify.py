@@ -13,6 +13,9 @@ produces a pass/fail report covering:
   5. UID consistency  — all output files share the same new StudyInstanceUID
   6. Pixel integrity  — pixel data is unchanged (hash comparison on a sample)
   7. Free-text tags   — no original free-text values survive in output
+  8. Technical params — acquisition/geometry tags (Manufacturer, KVP, TR/TE,
+                         SliceThickness, PixelSpacing, WindowCenter/Width,
+                         etc.) are byte-for-byte unchanged, not wiped
 
 Usage
 -----
@@ -41,9 +44,8 @@ WIPE_TAGS: list[tuple[int, int]] = [
     #(0x0010, 0x0010),  # PatientName
     #(0x0010, 0x0020),  # PatientID
     (0x0010, 0x0030),  # PatientBirthDate
-    (0x0010, 0x1010),  # PatientAge
-    (0x0010, 0x1020),  # PatientSize
-    (0x0010, 0x1030),  # PatientWeight
+    # PatientAge, PatientSize, PatientWeight, PatientSex intentionally NOT
+    # checked here — dicom_anonymizer.py retains them (see its WIPE_TAGS).
     (0x0010, 0x1040),  # PatientAddress
     (0x0010, 0x2154),  # PatientTelephoneNumbers
     (0x0010, 0x1002),  # OtherPatientIDsSequence
@@ -91,6 +93,51 @@ FREE_TEXT_TAGS: list[tuple[int, int]] = [
     (0x0020, 0x4000),  # ImageComments
     (0x0032, 0x4000),  # StudyComments
 ]
+
+# Technical / acquisition tags that must be RETAINED unchanged.
+# These carry no patient identity but are required for clinical/scientific
+# interpretation of the images (windowing, geometry, sequence parameters).
+# If any of these differ between original and anonymized, something in
+# dicom_anonymizer.py is over-wiping.
+TECHNICAL_TAGS: dict[tuple[int, int], str] = {
+    # Equipment / study context (not identifying on their own)
+    (0x0008, 0x0060): "Modality",
+    (0x0008, 0x0070): "Manufacturer",
+    (0x0008, 0x1090): "ManufacturerModelName",
+    (0x0018, 0x1020): "SoftwareVersions",
+    (0x0018, 0x0015): "BodyPartExamined",
+    # CT acquisition
+    (0x0018, 0x0060): "KVP",
+    (0x0018, 0x1150): "ExposureTime",
+    (0x0018, 0x1151): "XRayTubeCurrent",
+    (0x0018, 0x1152): "Exposure",
+    (0x0018, 0x1210): "ConvolutionKernel",
+    # MR acquisition
+    (0x0018, 0x0080): "RepetitionTime",
+    (0x0018, 0x0081): "EchoTime",
+    (0x0018, 0x1314): "FlipAngle",
+    (0x0018, 0x0087): "MagneticFieldStrength",
+    (0x0018, 0x0095): "PixelBandwidth",
+    (0x0018, 0x0020): "ScanningSequence",
+    (0x0018, 0x0021): "SequenceVariant",
+    (0x0018, 0x0023): "MRAcquisitionType",
+    # Geometry — required for correct NIfTI conversion
+    (0x0018, 0x0050): "SliceThickness",
+    (0x0018, 0x0088): "SpacingBetweenSlices",
+    (0x0028, 0x0030): "PixelSpacing",
+    (0x0020, 0x0032): "ImagePositionPatient",
+    (0x0020, 0x0037): "ImageOrientationPatient",
+    (0x0020, 0x1041): "SliceLocation",
+    (0x0028, 0x0010): "Rows",
+    (0x0028, 0x0011): "Columns",
+    (0x0028, 0x0100): "BitsAllocated",
+    (0x0028, 0x0103): "PixelRepresentation",
+    (0x0028, 0x1052): "RescaleIntercept",
+    (0x0028, 0x1053): "RescaleSlope",
+    # Display windowing — used to derive NIfTI cal_min/cal_max
+    (0x0028, 0x1050): "WindowCenter",
+    (0x0028, 0x1051): "WindowWidth",
+}
 
 TAG_NAMES: dict[tuple[int, int], str] = {
     (0x0010, 0x0010): "PatientName",
@@ -253,6 +300,21 @@ def check_file(
                         f"FREE-TEXT NOT REDACTED  {_tag_name(tag)}: "
                         f"PII '{pii}' still in '{anon_val}'"
                     )
+
+    # ── Check 7: Technical/acquisition tags are RETAINED unchanged ──
+    for tag, name in TECHNICAL_TAGS.items():
+        orig_val = _tag_value_str(orig_ds, tag)
+        if not orig_val:
+            continue  # tag wasn't present/populated in the source — nothing to check
+        anon_val = _tag_value_str(anon_ds, tag)
+        if not anon_val:
+            failures.append(
+                f"TECHNICAL PARAM LOST  {name}: had '{orig_val}', now empty/missing"
+            )
+        elif anon_val != orig_val:
+            failures.append(
+                f"TECHNICAL PARAM ALTERED  {name}: '{orig_val}' -> '{anon_val}'"
+            )
 
     return failures
 
@@ -454,17 +516,48 @@ def verify(original_dir: str, anonymized_dir: str) -> bool:
     # ── Summary of per-file failures ──
     print(f"\n[CHECK] Per-file failure summary ...")
     print(f"  Pixel integrity checked on first {pixels_checked} files")
-    if not file_failures:
-        print(f"  ✓ PASS  All {len(anon_files)} files passed all checks")
+    print(f"  Technical params checked per file: {len(TECHNICAL_TAGS)} tags "
+          f"(Manufacturer, KVP, TR/TE, SliceThickness, PixelSpacing, "
+          f"WindowCenter/Width, etc.)")
+
+    # Split failures into "PII/anonymization" vs "technical param retention"
+    # so a technical regression doesn't get lost among PII-check noise.
+    technical_failures: dict[str, list[str]] = {}
+    pii_failures: dict[str, list[str]] = {}
+    for fname, msgs in file_failures.items():
+        tech_msgs = [m for m in msgs if m.startswith("TECHNICAL PARAM")]
+        other_msgs = [m for m in msgs if not m.startswith("TECHNICAL PARAM")]
+        if tech_msgs:
+            technical_failures[fname] = tech_msgs
+        if other_msgs:
+            pii_failures[fname] = other_msgs
+
+    if not pii_failures:
+        print(f"  ✓ PASS  No PII/anonymization failures across {len(anon_files)} files")
     else:
         all_passed = False
-        print(f"  ✗ FAIL  {len(file_failures)} file(s) had failures:")
-        for fname, msgs in list(file_failures.items())[:10]:
+        print(f"  ✗ FAIL  {len(pii_failures)} file(s) had PII/anonymization failures:")
+        for fname, msgs in list(pii_failures.items())[:10]:
             print(f"\n  File: {fname[-45:]}")
             for msg in msgs:
                 print(f"    ✗ {msg}")
-        if len(file_failures) > 10:
-            print(f"\n  ... and {len(file_failures) - 10} more files with failures")
+        if len(pii_failures) > 10:
+            print(f"\n  ... and {len(pii_failures) - 10} more files with PII failures")
+
+    if not technical_failures:
+        print(f"\n  ✓ PASS  Technical/acquisition parameters retained unchanged "
+              f"across {len(anon_files)} files")
+    else:
+        all_passed = False
+        print(f"\n  ✗ FAIL  {len(technical_failures)} file(s) lost or altered "
+              f"technical parameters:")
+        for fname, msgs in list(technical_failures.items())[:10]:
+            print(f"\n  File: {fname[-45:]}")
+            for msg in msgs:
+                print(f"    ✗ {msg}")
+        if len(technical_failures) > 10:
+            print(f"\n  ... and {len(technical_failures) - 10} more files "
+                  f"with technical param failures")
 
     # ── Final verdict ──
     print("\n" + "=" * 60)

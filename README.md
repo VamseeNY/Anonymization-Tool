@@ -64,6 +64,8 @@ src/
   pixel_scrubber.py       ← Stage 2b — OCR burned-in annotation scrubber
   dicom_to_nifti.py       ← Stage 3 — DICOM to NIfTI converter
   pdf_extractor.py        ← Stage 4 — PDF extractor and anonymizer
+  pdf_template_store.py   ← Stage 4 — learned PDF layout ("template") cache
+  pdf_nuextract.py        ← Stage 4 — NuExtract3 extraction for new PDF layouts
   fhir_mapper.py          ← Stage 5 — FHIR R4 bundle builder
   dicom_verify.py         ← Utility — DICOM anonymization verifier
   pdf_inspect.py          ← Utility — PDF raw text inspector
@@ -230,6 +232,45 @@ Extracts structured clinical fields from a radiology or lab report PDF and anony
 **Text extraction:** Uses `pdfplumber` with two strategies:
 - **Word bounding boxes** for the header box — groups words by vertical position (±3px), splits each line into left/right columns at `x0=300`, extracts `label: value` pairs. Handles two-column clinic header layouts robustly across different clinic formats.
 - **Raw text lines** for the report body — section keywords (`Findings`, `Impression`, `Technique`, `Conclusion`, `Opinion`, `Results`) are used as optional anchors. If no section keywords are found, all body text is stored as findings.
+
+#### Layout learning — templates
+
+Report layouts vary between clinics, so the header and body are resolved by the first of three tiers that succeeds (`_resolve_structure()` in `pdf_extractor.py`):
+
+```
+PDF ─► Tier 0: fixed-layout parser ── ≥3 header fields + a body section? ──► done
+          │ no
+          ▼
+       Tier 1/2: stored templates ── a template matches? ──► reuse it (fast, no model)
+          │ no
+          ▼
+       Cold path: NuExtract3 (local LLM) ──► verify ──► learn + save a new template
+```
+
+**When is a new template needed?** When no stored template passes every check below (`find_matching_template()` in `pdf_template_store.py`):
+
+| Check | What must hold | Why |
+|---|---|---|
+| Keywords | ≥2 of the template's section headings (or the words technique / findings / impression) appear in the text | Cheap filter on document type |
+| Page size | Same width and height (±2 pt) | Different layouts can share a similar header |
+| Header labels | **Every** stored label (e.g. `Op No:`, `Date :`) found in full on the same row (±5 pt), up to 140 pt left of the stored value position | Redaction boxes are reused by position, so the layout must really match |
+| Section headings | Every stored heading (e.g. `PROTOCOL`, `OBSERVATIONS`) starts a line at the same left edge (±12 pt), in the same top-to-bottom order | Tells apart layouts with the same header but a different body. Vertical position is not checked — longer findings push later headings down |
+| No empty fields | Every stored header field finds text on this page | An unlabeled field (e.g. a patient name printed with no "Name:" label) can't be checked any other way. If this fails, the next candidate template is tried |
+
+Candidates are tried most-used first.
+
+**How a template is created (cold path, `pdf_nuextract.py`):**
+1. NuExtract3 extracts the fields from the report text.
+2. Hallucination guard: a value is trusted only if it appears verbatim in the PDF and its word boxes are found.
+3. `build_template_from_extraction()` stores, per verified identity field, the value's position as page fractions plus the label just left of it. Labels never include another field's value, digits, or titles like `Mr.`; a field with no label is stored with an empty label. **No patient values are stored.**
+4. For each body section it finds the heading line above the text (search distance scales with font size; only heading-shaped lines count — not bullets, sentences or lines with digits) and stores the heading text, left edge and order, plus the page size.
+5. The template is saved only if it matches the report it was built from — otherwise it could never be reused.
+
+**How a template is used:** each stored header box is read on the new page (widened 220 pt to the right, since values vary in length); those words become the identity values and the redaction boxes. The body is split using the template's learned headings. Each reuse increments `match_count`; at 3 the template is labelled `trusted` (informational only).
+
+**Storage:** one JSON file per template in `~/Library/Application Support/AnonymizationTool/pdf_templates/` (macOS), `%APPDATA%\AnonymizationTool\pdf_templates` (Windows) or `$XDG_DATA_HOME/AnonymizationTool/pdf_templates` (Linux). Override with `PDF_TEMPLATE_STORE_DIR`. Templates written before the matching changes lack `page_size` / `section_headings` and never match — delete them.
+
+**Effect:** the first report of a new layout takes the cold path (~25–40 s for the model); later reports of that layout skip it. On 18 test reports every layout was reused on its second pass, with no missed redactions compared with the model's own extraction.
 
 **Doubled character encoding fix:** Some Indian clinic PDFs use embedded fonts where each glyph maps to two Unicode characters (`AANNBBAARRAASSUU` → `ANBARASU`). A word-level de-duplication function detects and collapses these before any processing.
 
@@ -493,6 +534,8 @@ pip install \
 
 - **Multi-patient batching** — the pipeline processes one patient at a time. Batch processing would require wrapping `pipeline.py` in a loop over a patient list.
 - **LOINC code coverage** — the study type lookup covers common CT/MRI studies. Unusual study types fall back to the generic `18748-4` code.
-- **PDF format variability** — the header parser uses a fixed `x0=300` threshold to split two-column layouts and a fixed `top < 160` cutoff for the header zone. PDFs with significantly different layouts may require tuning these constants.
+- **PDF format variability** — the fixed-layout parser uses a fixed `x0=300` column split and `top < 160` header cutoff; other layouts go through the template / NuExtract3 path instead. Template matching is deliberately strict, so small layout variants (e.g. `Date` vs `Date :`) each get their own template and one extra model run.
+- **Unlabeled header fields** — a field with no label on the page (e.g. the patient name on some layouts) is trusted on the template path only because the rest of the layout matched and its box contains text.
+- **Age/sex on the template path** — not stored in templates, so they are empty when a template is reused (they are not redacted either way).
 - **In-memory job registry** — the API stores job state in a Python dict. If the server restarts, all job history is lost. A production deployment would replace this with Redis or a database.
 - **Single-user authentication** — the frontend uses hardcoded demo credentials. Replace with a real authentication backend before any production or multi-user deployment.

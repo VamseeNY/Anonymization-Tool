@@ -11,120 +11,178 @@
 <body data-show-logout="true" data-page="upload">
   <div id="sharedHeader"></div>
 
-  <main class="page-container">
+  <main class="upload-page-container">
 
     <div class="page-header">
-      <h2 id="pageTitle">Upload Patient Scan</h2>
-      <p class="page-subtitle" id="pageSubtitle">Upload the DICOM folder and one PDF report, then start processing.</p>
+      <h2 id="pageTitle">Upload Patient Scan(s)</h2>
+      <p class="page-subtitle" id="pageSubtitle">Upload one or more patients' DICOM data. Structure is detected automatically from the DICOM headers.</p>
     </div>
 
-    <!-- ── Upload card ── -->
-    <div class="card" id="uploadCard">
+    <div class="upload-layout">
 
-      <div class="form-group">
-        <p class="process-helper">
-          <i class="fas fa-info-circle"></i>
-          <span>Select a DICOM folder (all .dcm files) and a single radiology or lab report PDF. The pipeline will anonymize and convert them automatically.</span>
-        </p>
-      </div>
+      <!-- ── LEFT: expected format note ── -->
+      <aside class="side-panel">
+        <div class="side-panel-title"><i class="fas fa-sitemap"></i> Expected Format</div>
+        <div class="format-note-hierarchy">
+          <div><i class="fas fa-user"></i> Patient</div>
+          <div>Study</div>
+          <div>Series</div>
+          <div>Instances (.dcm)</div>
+          <div><i class="fas fa-file-pdf"></i> Report (.pdf)</div>
+        </div>
+        <div class="format-note-rule">
+          <b>Single patient:</b> select a folder of .dcm files — flat, or organized into series subfolders. Upload the report PDF separately below.
+        </div>
+        <div class="format-note-rule">
+          <b>Multiple patients:</b> select a parent folder containing one subfolder per patient. Each patient's report .pdf must be placed inside that patient's own folder, alongside their series.
+        </div>
+        <div class="format-note-rule">
+          Structure is detected from DICOM header tags (Patient/Study/Series IDs), not folder names — any layout works as long as each patient's own files stay together.
+        </div>
+      </aside>
 
-      <!-- DICOM folder -->
-      <div class="upload-item" style="margin-top:1rem;">
-        <span class="upload-item-label">DICOM Folder</span>
-        <div class="file-drop" id="dropDicom">
-          <input
-            type="file"
-            id="inputDicom"
-            webkitdirectory
-            directory
-            multiple
-            onchange="onDicomSelect()"
-            aria-label="DICOM folder"
-          >
-          <i class="fas fa-folder-open file-drop-icon"></i>
-          <div class="file-drop-body">
-            <div class="file-drop-main file-drop-placeholder" id="textDicom">Select DICOM folder…</div>
-            <div class="file-drop-meta" id="metaDicom" style="display:none;"></div>
+      <!-- ── CENTER: upload card + progress ── -->
+      <div>
+        <div class="card" id="uploadCard">
+
+          <div class="form-group">
+            <p class="process-helper">
+              <i class="fas fa-info-circle"></i>
+              <span>Select a folder containing one or more patients' DICOM files. The pipeline will anonymize and convert them automatically.</span>
+            </p>
+          </div>
+
+          <!-- DICOM folder -->
+          <div class="upload-item" style="margin-top:1rem;">
+            <span class="upload-item-label">DICOM Folder</span>
+            <div class="file-drop" id="dropDicom">
+              <input
+                type="file"
+                id="inputDicom"
+                webkitdirectory
+                directory
+                multiple
+                onchange="onDicomSelect()"
+                aria-label="DICOM folder"
+              >
+              <i class="fas fa-folder-open file-drop-icon"></i>
+              <div class="file-drop-body">
+                <div class="file-drop-main file-drop-placeholder" id="textDicom">Select DICOM folder…</div>
+                <div class="file-drop-meta" id="metaDicom" style="display:none;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Analyzing indicator -->
+          <div id="analyzingStatus" class="process-helper" style="display:none;">
+            <span class="spinner"></span>&nbsp;Analyzing structure…
+          </div>
+
+          <!-- Single-patient PDF field -->
+          <div class="upload-item" id="pdfFieldWrap" style="display:none;">
+            <span class="upload-item-label">Report PDF</span>
+            <div class="file-drop" id="dropPDF">
+              <input
+                type="file"
+                id="inputPDF"
+                accept=".pdf"
+                onchange="onPDFSelect()"
+                aria-label="Report PDF"
+              >
+              <i class="fas fa-file-pdf file-drop-icon"></i>
+              <div class="file-drop-body">
+                <div class="file-drop-main file-drop-placeholder" id="textPDF">Select PDF file…</div>
+                <div class="file-drop-meta" id="metaPDF" style="display:none;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Multi-patient note -->
+          <div class="upload-item" id="multiPdfNote" style="display:none;">
+            <p class="process-helper">
+              <i class="fas fa-info-circle"></i>
+              <span>Multiple patients detected — each patient's report PDF must already be inside that patient's folder. See the detected structure panel for status.</span>
+            </p>
+          </div>
+
+          <!-- Process button -->
+          <div class="process-section">
+            <button id="processBtn" class="btn btn-primary btn-lg" disabled onclick="startProcessing()">
+              <i class="fas fa-play-circle"></i> <span id="processBtnText">Start Pipeline</span>
+            </button>
+            <button id="clearBtn" class="btn btn-secondary btn-lg" type="button" onclick="clearUpload()">
+              <i class="fas fa-times"></i> Clear
+            </button>
+            <p class="process-helper" id="processHelper">
+              <i class="fas fa-info-circle"></i>
+              <span id="processHelperText">Select a DICOM folder to continue.</span>
+            </p>
           </div>
         </div>
-      </div>
 
-      <!-- PDF report -->
-      <div class="upload-item">
-        <span class="upload-item-label">Report PDF</span>
-        <div class="file-drop" id="dropPDF">
-          <input
-            type="file"
-            id="inputPDF"
-            accept=".pdf"
-            onchange="onPDFSelect()"
-            aria-label="Report PDF"
-          >
-          <i class="fas fa-file-pdf file-drop-icon"></i>
-          <div class="file-drop-body">
-            <div class="file-drop-main file-drop-placeholder" id="textPDF">Select PDF file…</div>
-            <div class="file-drop-meta" id="metaPDF" style="display:none;"></div>
+        <!-- ── Pipeline progress (shown after submit) ── -->
+        <section id="pipelineSection" style="display:none;" class="pipeline-section">
+
+          <div class="batch-progress-header" id="batchHeader" style="display:none;">
+            <i class="fas fa-users"></i>
+            <span id="batchHeaderText">Patient 1 of 1</span>
           </div>
-        </div>
+
+          <div class="pipeline-track">
+            <div class="pipeline-track-header">
+              <i class="fas fa-cogs"></i> Pipeline Progress
+              <span id="progressPct" style="margin-left:auto; font-size:0.9rem; color:var(--text); font-family:var(--font-mono);">0%</span>
+            </div>
+
+            <div class="progress-bar-wrap">
+              <div class="progress-bar-fill" id="progressFill"></div>
+            </div>
+
+            <div class="stage-list" id="stageList">
+              <div class="pipeline-stage" id="stg_read_dicom">
+                <span class="stage-dot"><i class="fas fa-check"></i></span>
+                <span class="stage-name">Read DICOM folder</span>
+              </div>
+              <div class="pipeline-stage" id="stg_anonymize_dicom">
+                <span class="stage-dot"><i class="fas fa-check"></i></span>
+                <span class="stage-name">Anonymize DICOM tags &amp; pixels</span>
+              </div>
+              <div class="pipeline-stage" id="stg_nifti">
+                <span class="stage-dot"><i class="fas fa-check"></i></span>
+                <span class="stage-name">Convert to NIfTI (.nii.gz)</span>
+              </div>
+              <div class="pipeline-stage" id="stg_pdf">
+                <span class="stage-dot"><i class="fas fa-check"></i></span>
+                <span class="stage-name">Extract &amp; anonymize PDF report</span>
+              </div>
+              <div class="pipeline-stage" id="stg_fhir">
+                <span class="stage-dot"><i class="fas fa-check"></i></span>
+                <span class="stage-name">Build FHIR R4 bundle JSON</span>
+              </div>
+              <div class="pipeline-stage" id="stg_done">
+                <span class="stage-dot"><i class="fas fa-check"></i></span>
+                <span class="stage-name">Complete</span>
+              </div>
+            </div>
+
+            <!-- Live message -->
+            <div id="liveMessage" style="margin-top:1rem; font-size:0.83rem; color:var(--text-muted); min-height:1.2rem;"></div>
+          </div>
+
+          <div class="batch-progress-list" id="batchPillList"></div>
+
+        </section>
       </div>
 
-      <!-- Process button -->
-      <div class="process-section">
-        <button id="processBtn" class="btn btn-primary btn-lg" disabled onclick="startProcessing()">
-          <i class="fas fa-play-circle"></i> Start Pipeline
-        </button>
-        <p class="process-helper" id="processHelper">
-          <i class="fas fa-info-circle"></i>
-          <span id="processHelperText">Upload a DICOM folder and a PDF report to continue.</span>
-        </p>
-      </div>
+      <!-- ── RIGHT: detected structure tree ── -->
+      <aside class="side-panel">
+        <div class="side-panel-title"><i class="fas fa-folder-tree"></i> Detected Structure</div>
+        <div class="tree-panel-body" id="treePanelBody">
+          <div class="tree-empty">Select a DICOM folder to see its structure here.</div>
+        </div>
+      </aside>
+
     </div>
-
-    <!-- ── Pipeline progress (shown after submit) ── -->
-    <section id="pipelineSection" style="display:none;" class="pipeline-section">
-
-      <div class="pipeline-track">
-        <div class="pipeline-track-header">
-          <i class="fas fa-cogs"></i> Pipeline Progress
-          <span id="progressPct" style="margin-left:auto; font-size:0.9rem; color:var(--text); font-family:var(--font-mono);">0%</span>
-        </div>
-
-        <div class="progress-bar-wrap">
-          <div class="progress-bar-fill" id="progressFill"></div>
-        </div>
-
-        <div class="stage-list" id="stageList">
-          <div class="pipeline-stage" id="stg_read_dicom">
-            <span class="stage-dot"><i class="fas fa-check"></i></span>
-            <span class="stage-name">Read DICOM folder</span>
-          </div>
-          <div class="pipeline-stage" id="stg_anonymize_dicom">
-            <span class="stage-dot"><i class="fas fa-check"></i></span>
-            <span class="stage-name">Anonymize DICOM tags &amp; pixels</span>
-          </div>
-          <div class="pipeline-stage" id="stg_nifti">
-            <span class="stage-dot"><i class="fas fa-check"></i></span>
-            <span class="stage-name">Convert to NIfTI (.nii.gz)</span>
-          </div>
-          <div class="pipeline-stage" id="stg_pdf">
-            <span class="stage-dot"><i class="fas fa-check"></i></span>
-            <span class="stage-name">Extract &amp; anonymize PDF report</span>
-          </div>
-          <div class="pipeline-stage" id="stg_fhir">
-            <span class="stage-dot"><i class="fas fa-check"></i></span>
-            <span class="stage-name">Build FHIR R4 bundle JSON</span>
-          </div>
-          <div class="pipeline-stage" id="stg_done">
-            <span class="stage-dot"><i class="fas fa-check"></i></span>
-            <span class="stage-name">Complete</span>
-          </div>
-        </div>
-
-        <!-- Live message -->
-        <div id="liveMessage" style="margin-top:1rem; font-size:0.83rem; color:var(--text-muted); min-height:1.2rem;"></div>
-      </div>
-
-    </section>
 
   </main>
 
@@ -135,8 +193,11 @@
     requireAuth();
 
     // ── State ──
-    let dicomFiles = [];
-    let pdfFile    = null;
+    let dicomFiles   = [];   // ALL File objects from the folder pick (any extension)
+    let pdfFile      = null; // single-patient PDF field
+    let analyzeResult = null; // last POST /analyze response
+    let analyzeDebounceTimer = null;
+    let analyzeToken = 0; // guards against a stale /analyze response landing after a newer selection
 
     // ── Stage → SSE event stage name mapping ──
     const STAGE_MAP = {
@@ -149,20 +210,26 @@
       error:            null,
     };
 
+    function dcmFilesOnly() {
+      return dicomFiles.filter(f => f.name.toLowerCase().endsWith('.dcm'));
+    }
+
     // ── File select handlers ──
     function onDicomSelect() {
       const input = document.getElementById('inputDicom');
-      const files = Array.from(input.files).filter(f => f.name.endsWith('.dcm'));
-      dicomFiles = files;
-      const drop  = document.getElementById('dropDicom');
-      const text  = document.getElementById('textDicom');
-      const meta  = document.getElementById('metaDicom');
-      if (files.length > 0) {
+      dicomFiles = Array.from(input.files);
+
+      const drop = document.getElementById('dropDicom');
+      const text = document.getElementById('textDicom');
+      const meta = document.getElementById('metaDicom');
+      const dcmCount = dcmFilesOnly().length;
+
+      if (dicomFiles.length > 0) {
         drop.classList.add('has-files');
         const folder = (input.files[0].webkitRelativePath || '').split('/')[0] || 'Selected folder';
         text.textContent = folder;
         text.classList.remove('file-drop-placeholder');
-        meta.textContent = files.length + ' .dcm file' + (files.length !== 1 ? 's' : '');
+        meta.textContent = dcmCount + ' .dcm file' + (dcmCount !== 1 ? 's' : '') + ' found';
         meta.style.display = 'block';
       } else {
         drop.classList.remove('has-files');
@@ -170,7 +237,16 @@
         text.classList.add('file-drop-placeholder');
         meta.style.display = 'none';
       }
+
+      analyzeResult = null;
+      updatePdfFieldVisibility(null);
+      renderTreePlaceholder();
       validate();
+
+      if (dcmCount > 0) {
+        clearTimeout(analyzeDebounceTimer);
+        analyzeDebounceTimer = setTimeout(runAnalyze, 150);
+      }
     }
 
     function onPDFSelect() {
@@ -194,23 +270,212 @@
       validate();
     }
 
-    function validate() {
-      const btn  = document.getElementById('processBtn');
-      const txt  = document.getElementById('processHelperText');
-      const hlp  = document.getElementById('processHelper');
-      if (dicomFiles.length === 0) {
-        btn.disabled = true;
-        hlp.classList.add('is-error');
-        txt.textContent = 'Upload a DICOM folder containing .dcm files to continue.';
-      } else if (!pdfFile) {
-        btn.disabled = true;
-        hlp.classList.add('is-error');
-        txt.textContent = 'Upload a PDF report to continue.';
-      } else {
-        btn.disabled = false;
-        hlp.classList.remove('is-error');
-        txt.textContent = `Ready — ${dicomFiles.length} DICOM files + ${pdfFile.name}`;
+    // ── Structure analysis (POST /analyze) ──
+    async function runAnalyze() {
+      const myToken = ++analyzeToken;
+      document.getElementById('analyzingStatus').style.display = 'flex';
+      document.getElementById('processBtn').disabled = true;
+
+      try {
+        const formData = new FormData();
+        dicomFiles.forEach(f => {
+          const relPath = f.webkitRelativePath || f.name;
+          formData.append('files', f, relPath);
+        });
+
+        const res = await fetch(API_BASE + '/analyze', { method: 'POST', body: formData });
+        if (myToken !== analyzeToken) return; // a newer selection superseded this call
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: 'Analysis failed' }));
+          throw new Error(err.detail || 'Analysis failed');
+        }
+
+        analyzeResult = await res.json();
+        renderTree(analyzeResult);
+        updatePdfFieldVisibility(analyzeResult.mode);
+      } catch (err) {
+        if (myToken !== analyzeToken) return;
+        analyzeResult = null;
+        renderTreeError(err.message);
+      } finally {
+        if (myToken === analyzeToken) {
+          document.getElementById('analyzingStatus').style.display = 'none';
+          validate();
+        }
       }
+    }
+
+    function updatePdfFieldVisibility(mode) {
+      const pdfWrap    = document.getElementById('pdfFieldWrap');
+      const multiNote  = document.getElementById('multiPdfNote');
+      pdfWrap.style.display   = (mode === 'single') ? 'block' : 'none';
+      multiNote.style.display = (mode === 'multi')  ? 'block' : 'none';
+    }
+
+    // ── Tree rendering ──
+    function renderTreePlaceholder() {
+      document.getElementById('treePanelBody').innerHTML =
+        '<div class="tree-empty">Select a DICOM folder to see its structure here.</div>';
+    }
+
+    function renderTreeError(msg) {
+      document.getElementById('treePanelBody').innerHTML =
+        '<div class="tree-empty" style="color:var(--red);"><i class="fas fa-exclamation-circle"></i><br>' +
+        escapeHtml(msg) + '</div>';
+    }
+
+    const PDF_STATUS_LABEL = {
+      ok: 'PDF found', missing: 'PDF missing', multiple: 'Multiple PDFs', not_required: 'Uses separate PDF field',
+    };
+
+    function renderTree(result) {
+      const body = document.getElementById('treePanelBody');
+      const modeLabel = result.mode === 'single' ? 'Single patient' : (result.patient_count + ' patients');
+      const modeIcon  = result.mode === 'single' ? 'user' : 'users';
+
+      let html = '<div class="tree-mode-badge"><i class="fas fa-' + modeIcon + '"></i> ' + escapeHtml(modeLabel) + '</div>';
+
+      result.patients.forEach(p => {
+        const seriesRows = p.series.map(s => (
+          '<div class="tree-series-row">' +
+          escapeHtml(s.modality || '?') + ' — ' + escapeHtml(s.series_description || 'series') +
+          ' (' + s.instance_count + ')</div>'
+        )).join('');
+
+        // Always show what was actually found, not just a status badge —
+        // this matters most exactly when the input is wrong (e.g. two
+        // PDFs matched to one patient): the filenames make the conflict
+        // visible instead of just a "Multiple PDFs" label.
+        const label = PDF_STATUS_LABEL[p.pdf_status] || p.pdf_status;
+        const fileLines = (p.pdf_files && p.pdf_files.length > 0)
+          ? p.pdf_files.map(f => '<div class="tree-pdf-file">' + escapeHtml(f) + '</div>').join('')
+          : '<div class="tree-pdf-file-none">' +
+              (p.pdf_status === 'not_required' ? 'none found — uses separate PDF field' : 'no PDF found in this folder') +
+            '</div>';
+
+        const pdfBlock =
+          '<div class="tree-pdf-row"><span class="pdf-status-badge pdf-status-' + p.pdf_status + '">' +
+          escapeHtml(label) + '</span></div>' +
+          '<div class="tree-pdf-files">' + fileLines + '</div>';
+
+        html +=
+          '<div class="tree-patient">' +
+            '<div class="tree-patient-header"><span class="tree-patient-name">' +
+              escapeHtml(p.patient_name || p.patient_id || 'Unknown patient') +
+            '</span></div>' +
+            '<div class="tree-patient-folder"><i class="fas fa-folder"></i> ' + escapeHtml(p.folder || '.') + '</div>' +
+            '<div class="tree-series-list">' + seriesRows + '</div>' +
+            pdfBlock +
+          '</div>';
+      });
+
+      // PDFs that didn't fall inside any patient's folder — shown even
+      // when the rest of the structure is otherwise fine, so a stray or
+      // misplaced report is never silently dropped from view.
+      if (result.unassociated_pdfs && result.unassociated_pdfs.length > 0) {
+        html +=
+          '<div class="tree-unassociated">' +
+            '<div class="tree-unassociated-title"><i class="fas fa-exclamation-circle"></i> Unmatched PDF file(s)</div>' +
+            result.unassociated_pdfs.map(f => '<div class="tree-unassociated-file">' + escapeHtml(f) + '</div>').join('') +
+          '</div>';
+      }
+
+      if (result.errors && result.errors.length > 0) {
+        html +=
+          '<div class="validation-errors">' +
+            '<div class="validation-errors-title"><i class="fas fa-exclamation-triangle"></i> Fix before continuing</div>' +
+            '<ul>' + result.errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>' +
+          '</div>';
+      }
+
+      body.innerHTML = html;
+    }
+
+    // ── Validation / button state ──
+    function validate() {
+      const btn = document.getElementById('processBtn');
+      const txt = document.getElementById('processHelperText');
+      const hlp = document.getElementById('processHelper');
+      const dcmCount = dcmFilesOnly().length;
+
+      if (dcmCount === 0) {
+        btn.disabled = true;
+        hlp.classList.add('is-error');
+        txt.textContent = 'Select a folder containing .dcm files to continue.';
+        return;
+      }
+
+      if (!analyzeResult) {
+        btn.disabled = true;
+        hlp.classList.remove('is-error');
+        txt.textContent = 'Analyzing structure…';
+        return;
+      }
+
+      if (analyzeResult.mode === 'single') {
+        if (!pdfFile) {
+          btn.disabled = true;
+          hlp.classList.add('is-error');
+          txt.textContent = 'Upload a PDF report to continue.';
+        } else {
+          btn.disabled = false;
+          hlp.classList.remove('is-error');
+          const p = analyzeResult.patients[0];
+          txt.textContent = 'Ready — ' + (p.patient_name || p.patient_id) + ' + ' + pdfFile.name;
+        }
+      } else {
+        if (analyzeResult.errors && analyzeResult.errors.length > 0) {
+          btn.disabled = true;
+          hlp.classList.add('is-error');
+          txt.textContent = 'Resolve ' + analyzeResult.errors.length + ' issue(s) shown in the structure panel to continue.';
+        } else {
+          btn.disabled = false;
+          hlp.classList.remove('is-error');
+          txt.textContent = 'Ready — ' + analyzeResult.patient_count + ' patients will be processed one at a time.';
+        }
+      }
+    }
+
+    // ── Clear button — resets both inputs and any in-flight/staged analysis ──
+    async function clearUpload() {
+      // If a multi-patient /analyze already staged files server-side but the
+      // user never hit "Start Pipeline", that session would otherwise be
+      // orphaned on disk — clean it up now.
+      if (analyzeResult && analyzeResult.session_id) {
+        try {
+          await fetch(API_BASE + '/sessions/' + analyzeResult.session_id, { method: 'DELETE' });
+        } catch {}
+      }
+
+      analyzeToken++; // invalidate any /analyze call still in flight
+      clearTimeout(analyzeDebounceTimer);
+
+      dicomFiles    = [];
+      pdfFile       = null;
+      analyzeResult = null;
+
+      document.getElementById('inputDicom').value = '';
+      document.getElementById('inputPDF').value   = '';
+
+      const dropDicom = document.getElementById('dropDicom');
+      const textDicom = document.getElementById('textDicom');
+      dropDicom.classList.remove('has-files');
+      textDicom.textContent = 'Select DICOM folder…';
+      textDicom.classList.add('file-drop-placeholder');
+      document.getElementById('metaDicom').style.display = 'none';
+
+      const dropPDF = document.getElementById('dropPDF');
+      const textPDF = document.getElementById('textPDF');
+      dropPDF.classList.remove('has-files');
+      textPDF.textContent = 'Select PDF file…';
+      textPDF.classList.add('file-drop-placeholder');
+      document.getElementById('metaPDF').style.display = 'none';
+
+      document.getElementById('analyzingStatus').style.display = 'none';
+      updatePdfFieldVisibility(null);
+      renderTreePlaceholder();
+      validate();
     }
 
     // ── Stage helpers ──
@@ -219,6 +484,10 @@
       if (!el) return;
       el.classList.remove('is-active', 'is-done', 'is-error');
       if (state) el.classList.add('is-' + state);
+    }
+
+    function resetStages() {
+      Object.values(STAGE_MAP).filter(Boolean).forEach(id => setStage(id, null));
     }
 
     function setProgress(pct) {
@@ -234,40 +503,90 @@
       document.getElementById('pageSubtitle').textContent = msg;
     }
 
-    // ── Main pipeline start ──
-    async function startProcessing() {
-      if (dicomFiles.length === 0 || !pdfFile) return;
+    // ── SSE streaming — shared by single-patient and each patient in a batch ──
+    function streamJobToCompletion(jobId) {
+      return new Promise((resolve) => {
+        const es = new EventSource(API_BASE + '/jobs/' + jobId + '/stream');
+        let lastStageId = null;
 
-      // Switch UI
+        es.onmessage = (e) => {
+          let event;
+          try { event = JSON.parse(e.data); } catch { return; }
+          const { type, stage, message, progress } = event;
+
+          const stageId = STAGE_MAP[stage];
+          if (stageId && stageId !== lastStageId) {
+            if (lastStageId) setStage(lastStageId, 'done');
+            if (type === 'progress') setStage(stageId, 'active');
+            lastStageId = stageId;
+          }
+
+          setProgress(progress || 0);
+          setLive(message || '');
+          setSubtitle(message || 'Running…');
+
+          if (type === 'complete') {
+            es.close();
+            Object.values(STAGE_MAP).filter(Boolean).forEach(id => setStage(id, 'done'));
+            setProgress(100);
+            fetch(API_BASE + '/jobs/' + jobId + '/status')
+              .then(r => r.json())
+              .then(status => resolve({ jobId, status: status.status, outputs: status.outputs, error: null }))
+              .catch(() => resolve({ jobId, status: 'done', outputs: {}, error: 'Could not fetch results' }));
+          }
+
+          if (type === 'error') {
+            es.close();
+            if (lastStageId) setStage(lastStageId, 'error');
+            setSubtitle('Pipeline failed: ' + message);
+            setLive('Error: ' + message);
+            resolve({ jobId, status: 'error', outputs: {}, error: message });
+          }
+        };
+
+        es.onerror = () => {
+          es.close();
+          setSubtitle('Connection to server lost. Check if the API is running.');
+          if (lastStageId) setStage(lastStageId, 'error');
+          resolve({ jobId, status: 'error', outputs: {}, error: 'Connection lost' });
+        };
+      });
+    }
+
+    // ── Main dispatch ──
+    async function startProcessing() {
+      if (!analyzeResult) return;
+
       document.getElementById('uploadCard').style.display = 'none';
       document.getElementById('pipelineSection').style.display = 'block';
-      document.getElementById('pageTitle').textContent = 'Processing Scan';
-      setSubtitle('Uploading files and starting pipeline…');
+      document.getElementById('pageTitle').textContent = 'Processing Scan(s)';
 
-      // Mark first stage active immediately
+      if (analyzeResult.mode === 'single') {
+        await runSinglePatientJob();
+      } else {
+        await runMultiPatientBatch();
+      }
+    }
+
+    // ── Single-patient flow (unchanged backend contract — POST /jobs) ──
+    async function runSinglePatientJob() {
+      setSubtitle('Uploading files and starting pipeline…');
       setStage('stg_read_dicom', 'active');
 
-      // ── Upload via POST /jobs ──
       let jobId;
       try {
         const formData = new FormData();
-        dicomFiles.forEach(f => formData.append('dicom_files', f));
+        dcmFilesOnly().forEach(f => formData.append('dicom_files', f));
         formData.append('pdf_file', pdfFile);
 
-        const res = await fetch(API_BASE + '/jobs', {
-          method: 'POST',
-          body: formData,
-        });
-
+        const res = await fetch(API_BASE + '/jobs', { method: 'POST', body: formData });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
           throw new Error(err.detail || 'Upload failed');
         }
-
         const data = await res.json();
         jobId = data.job_id;
         setSubtitle('Job started — streaming progress…');
-
       } catch (err) {
         setSubtitle('Upload failed: ' + err.message);
         Object.values(STAGE_MAP).filter(Boolean).forEach(id => setStage(id, 'error'));
@@ -275,65 +594,98 @@
         return;
       }
 
-      // ── Stream SSE progress ──
-      const es = new EventSource(API_BASE + '/jobs/' + jobId + '/stream');
-      let lastStageId = null;
+      const result = await streamJobToCompletion(jobId);
+      if (result.status === 'error') return; // error already shown inline — stay on page
 
-      es.onmessage = (e) => {
-        let event;
-        try { event = JSON.parse(e.data); } catch { return; }
+      const p = analyzeResult.patients[0];
+      setSubtitle('Complete — fetching results…');
+      sessionStorage.setItem('pipelineResult', JSON.stringify([{
+        jobId:       result.jobId,
+        status:      result.status,
+        outputs:     result.outputs,
+        patientName: p.patient_name,
+        patientId:   p.patient_id,
+        timestamp:   new Date().toISOString(),
+      }]));
+      setTimeout(() => { window.location.href = 'results.html'; }, 600);
+    }
 
-        const { type, stage, message, progress } = event;
+    // ── Multi-patient flow — sequential jobs via POST /jobs/from-session ──
+    async function runMultiPatientBatch() {
+      const patients  = analyzeResult.patients;
+      const sessionId = analyzeResult.session_id;
+      const results   = [];
 
-        // Mark previous stage done, new stage active
-        const stageId = STAGE_MAP[stage];
-        if (stageId && stageId !== lastStageId) {
-          if (lastStageId) setStage(lastStageId, 'done');
-          if (type === 'progress') setStage(stageId, 'active');
-          lastStageId = stageId;
+      const batchHeader = document.getElementById('batchHeader');
+      const pillList     = document.getElementById('batchPillList');
+      batchHeader.style.display = 'flex';
+      pillList.innerHTML = patients.map((p, i) =>
+        '<span class="batch-pill" id="pill_' + i + '">' + escapeHtml(p.patient_name || p.patient_id) + '</span>'
+      ).join('');
+
+      for (let i = 0; i < patients.length; i++) {
+        const p = patients[i];
+        document.getElementById('batchHeaderText').textContent =
+          'Patient ' + (i + 1) + ' of ' + patients.length + ' — ' + (p.patient_name || p.patient_id);
+        const pill = document.getElementById('pill_' + i);
+        pill.classList.add('is-active');
+
+        resetStages();
+        setProgress(0);
+        setLive('');
+        setStage('stg_read_dicom', 'active');
+        setSubtitle('Starting pipeline for ' + (p.patient_name || p.patient_id) + '…');
+
+        let jobId = null;
+        let startError = null;
+        try {
+          const formData = new FormData();
+          formData.append('session_id', sessionId);
+          formData.append('study_uid', p.study_uid);
+          const res = await fetch(API_BASE + '/jobs/from-session', { method: 'POST', body: formData });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Failed to start job' }));
+            throw new Error(err.detail || 'Failed to start job');
+          }
+          const data = await res.json();
+          jobId = data.job_id;
+        } catch (err) {
+          startError = err.message;
         }
 
-        setProgress(progress || 0);
-        setLive(message || '');
-        setSubtitle(message || 'Running…');
-
-        if (type === 'complete') {
-          es.close();
-          // Mark all stages done
-          Object.values(STAGE_MAP).filter(Boolean).forEach(id => setStage(id, 'done'));
-          setProgress(100);
-          setSubtitle('Complete — fetching results…');
-
-          // Fetch status for download URLs then redirect
-          fetch(API_BASE + '/jobs/' + jobId + '/status')
-            .then(r => r.json())
-            .then(status => {
-              sessionStorage.setItem('pipelineResult', JSON.stringify({
-                jobId,
-                status: status.status,
-                outputs: status.outputs,
-                timestamp: new Date().toISOString(),
-              }));
-              setTimeout(() => { window.location.href = 'results.html'; }, 600);
-            })
-            .catch(() => {
-              setSubtitle('Pipeline complete but could not fetch results.');
-            });
+        let result;
+        if (startError) {
+          setStage('stg_read_dicom', 'error');
+          setLive('Error: ' + startError);
+          result = { jobId: null, status: 'error', outputs: {}, error: startError };
+        } else {
+          result = await streamJobToCompletion(jobId);
         }
 
-        if (type === 'error') {
-          es.close();
-          if (lastStageId) setStage(lastStageId, 'error');
-          setSubtitle('Pipeline failed: ' + message);
-          setLive('Error: ' + message);
-        }
-      };
+        pill.classList.remove('is-active');
+        pill.classList.add(result.status === 'done' ? 'is-done' : 'is-error');
 
-      es.onerror = () => {
-        es.close();
-        setSubtitle('Connection to server lost. Check if the API is running.');
-        if (lastStageId) setStage(lastStageId, 'error');
-      };
+        results.push({
+          jobId:       result.jobId,
+          status:      result.status,
+          outputs:     result.outputs,
+          patientName: p.patient_name,
+          patientId:   p.patient_id,
+          error:       result.error,
+          timestamp:   new Date().toISOString(),
+        });
+
+        // Continue on to the next patient even if this one failed — one bad
+        // study shouldn't block the rest of the batch.
+      }
+
+      // Every patient has been submitted — the staged session can go.
+      try { await fetch(API_BASE + '/sessions/' + sessionId, { method: 'DELETE' }); } catch {}
+
+      const doneCount = results.filter(r => r.status === 'done').length;
+      setSubtitle('Complete — ' + doneCount + '/' + results.length + ' patients processed. Redirecting…');
+      sessionStorage.setItem('pipelineResult', JSON.stringify(results));
+      setTimeout(() => { window.location.href = 'results.html'; }, 800);
     }
   </script>
 </body>

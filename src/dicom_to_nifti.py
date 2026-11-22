@@ -118,6 +118,99 @@ def _get_window_from_dicom(dcm_path: Path) -> tuple[float, float]:
     cal_max = wc + (ww / 2)
 
     return cal_min, cal_max
+def _check_nifti_geometry_preserved(
+    dcm_path: Path,
+    nifti_path: str,
+    expected_slice_count: int,
+) -> dict:
+    """
+    Compare the NIfTI output's geometry against the source anonymized
+    DICOM slice's own geometry tags — confirms spatial/technical
+    information survived the dicom2nifti conversion step, not just the
+    DICOM-to-DICOM anonymization.
+
+    dicom2nifti can reorient/permute axes (reorient_nifti=True), so voxel
+    spacing is compared as a SET rather than by position — robust to axis
+    reordering, while still catching real geometry loss (e.g. spacing
+    collapsing to a 1.0/1.0/1.0 default, or the wrong slice count) that
+    would matter for downstream use of the NIfTI file.
+
+    Any check whose source tag isn't present in the DICOM is skipped
+    (returns None for that sub-check) rather than counted as a failure —
+    "if available in the input data", per the pipeline's preservation
+    policy.
+    """
+    result = {
+        "spacing_preserved":     None,
+        "cal_window_preserved":  None,
+        "slice_count_preserved": None,
+        "preserved":             True,
+        "note":                  "",
+    }
+
+    try:
+        import pydicom
+        ds  = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
+        img = nib.load(nifti_path)
+        hdr = img.header
+        zooms = [float(z) for z in hdr.get_zooms()[:3]]
+    except Exception as e:
+        result["preserved"] = False
+        result["note"] = f"Could not compare geometry: {e}"
+        return result
+
+    notes = []
+
+    # ── Voxel spacing — compared as a set, tolerant of axis reordering ──
+    px_spacing = getattr(ds, "PixelSpacing", None)
+    slice_thickness = getattr(ds, "SliceThickness", None)
+    if px_spacing is not None and slice_thickness is not None:
+        try:
+            expected = sorted([
+                round(float(px_spacing[0]), 2),
+                round(float(px_spacing[1]), 2),
+                round(float(slice_thickness), 2),
+            ])
+            actual = sorted(round(z, 2) for z in zooms)
+            spacing_ok = all(
+                any(abs(e - a) <= max(0.05, e * 0.05) for a in actual)
+                for e in expected
+            )
+            result["spacing_preserved"] = spacing_ok
+            if not spacing_ok:
+                notes.append(f"voxel spacing {actual} does not match source {expected}")
+        except Exception:
+            pass  # leave as None — couldn't parse, don't fail the check for it
+
+    # ── Display window — only meaningful if source had Window Center/Width ──
+    wc = getattr(ds, "WindowCenter", None)
+    ww = getattr(ds, "WindowWidth", None)
+    if wc is not None and ww is not None:
+        cal_min = float(hdr["cal_min"])
+        cal_max = float(hdr["cal_max"])
+        window_ok = not (cal_min == 0.0 and cal_max == 0.0)
+        result["cal_window_preserved"] = window_ok
+        if not window_ok:
+            notes.append("source has WindowCenter/WindowWidth but NIfTI cal_min/cal_max are both 0")
+
+    # ── Slice count — one NIfTI dim should match the series' instance count ──
+    try:
+        slice_count_ok = expected_slice_count in img.shape
+        result["slice_count_preserved"] = slice_count_ok
+        if not slice_count_ok:
+            notes.append(f"NIfTI shape {img.shape} doesn't contain expected slice count {expected_slice_count}")
+    except Exception:
+        pass
+
+    checks = [v for v in (
+        result["spacing_preserved"], result["cal_window_preserved"], result["slice_count_preserved"]
+    ) if v is not None]
+    result["preserved"] = all(checks) if checks else True
+    result["note"] = "; ".join(notes) if notes else "Geometry consistent with source DICOM."
+
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Per-series conversion
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,11 +314,16 @@ def _convert_series(
 
         print(f"  [OK] Written: {out_path.name}")
 
+        geometry_check = _check_nifti_geometry_preserved(
+            anon_dcm_paths[0], str(out_path), len(anon_dcm_paths)
+        )
+
         return {
-            "series_uid":     anon_series_uid,
-            "modality":       modality,
-            "nifti_path":     str(out_path),
-            "instance_count": len(anon_dcm_paths),
+            "series_uid":      anon_series_uid,
+            "modality":        modality,
+            "nifti_path":      str(out_path),
+            "instance_count":  len(anon_dcm_paths),
+            "geometry_check":  geometry_check,
         }
 
     except dicom2nifti.exceptions.ConversionValidationError as e:

@@ -19,11 +19,11 @@ Design decisions
 
 - PatientName is replaced with "ANON-<anon_patient_id>".
   PatientID is replaced with the anon_patient_id.
-  PatientSex is retained under PS3.15 E.3.7 (Retain Patient Characteristics Option).
-  Table E.1-1 action code for PatientSex is Z/D (replace or zero); retention requires
-  explicit invocation of E.3.7, which is declared in DeidentificationMethodCodeSequence
-  with code 113108. Sex is retained because it is required for image quantification
-  pipelines (e.g. PET SUV body-surface-area corrections).
+  PatientAge, PatientSize, PatientWeight, PatientSex are retained under
+  PS3.15 E.3.7 (Retain Patient Characteristics Option), declared in
+  DeidentificationMethodCodeSequence with code 113108. They are clinically
+  relevant (e.g. PET SUV body-surface-area corrections) and low
+  re-identification risk on their own.
   All other identity, date, and device tags are wiped (set to empty string).
 
 - Free-text tags (StudyDescription, AdditionalPatientHistory, etc.) are
@@ -66,6 +66,7 @@ from dicom_reader import DicomStudy, DicomSeries, DicomInstance
 from pixel_scrubber import (
     load_ocr_reader,
     scrub_pixels,
+    has_pixel_data,
 )
 import uuid as _uuid_mod 
 
@@ -78,9 +79,10 @@ import uuid as _uuid_mod
 # Stored as a set for O(1) lookup during recursive walking.
 WIPE_TAGS: set[tuple[int, int]] = {
     (0x0010, 0x0030),  # PatientBirthDate
-    (0x0010, 0x1010),  # PatientAge
-    (0x0010, 0x1020),  # PatientSize
-    (0x0010, 0x1030),  # PatientWeight
+    # PatientAge, PatientSize, PatientWeight, PatientSex are intentionally
+    # NOT wiped — retained as clinically relevant, low re-identification-risk
+    # patient characteristics (see also pdf_extractor.py's _redact_extract,
+    # which keeps the same fields for the PDF report).
     (0x0010, 0x1040),  # PatientAddress
     (0x0010, 0x2154),  # PatientTelephoneNumbers
     (0x0010, 0x1002),  # OtherPatientIDsSequence
@@ -483,8 +485,8 @@ def _anonymize_dataset(
 
         # ImplementationVersionName (0002,0013) — may identify the acquiring
         # system's software version. Replace with pipeline identifier.
-        ds.file_meta[0x0002, 0x0013].value = "ANON-PIPELINE-V1" \
-            if (0x0002, 0x0013) in ds.file_meta else None
+        if (0x0002, 0x0013) in ds.file_meta:
+            ds.file_meta[0x0002, 0x0013].value = "ANON-PIPELINE-V1"
 
         # SourceApplicationEntityTitle (0002,0016) — identifies the AE (device)
         # that created the file. Remove to prevent device re-identification.
@@ -531,6 +533,227 @@ def _anonymize_dataset(
     )
 
     return ds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PII audit — before vs after, for the results-page comparison view
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_pii_audit(
+    before_ds: pydicom.Dataset,
+    after_ds: pydicom.Dataset,
+) -> list[dict]:
+    """
+    Compare *before_ds* (an original, unmodified instance) against
+    *after_ds* (the same instance after _anonymize_dataset() has run) for
+    every tag this pipeline acts on, and return one entry per tag that
+    actually had a value in the original.
+
+    Only for the results-page "PII before vs after" comparison view —
+    plays no part in anonymization itself, and reads no more than what
+    _anonymize_dataset() already touches.
+    """
+    import pydicom.datadict as dd
+
+    audit_tags: list[tuple[tuple[int, int], str]] = [
+        (_TAG_PATIENT_NAME, "pseudonymized"),
+        (_TAG_PATIENT_ID,   "pseudonymized"),
+    ]
+    audit_tags += [(tag, "removed")  for tag in WIPE_TAGS]
+    audit_tags += [(tag, "redacted") for tag in FREE_TEXT_TAGS]
+    audit_tags += [(tag, "remapped") for tag in UID_TAGS]
+
+    entries = []
+    seen: set[tuple[int, int]] = set()
+
+    for tag, action in audit_tags:
+        if tag in seen:
+            continue
+        seen.add(tag)
+
+        if tag not in before_ds:
+            continue
+        try:
+            original = str(before_ds[tag].value).strip()
+        except Exception:
+            continue
+        if not original:
+            continue
+
+        anonymized = ""
+        if tag in after_ds:
+            try:
+                anonymized = str(after_ds[tag].value).strip()
+            except Exception:
+                anonymized = ""
+
+        name = dd.keyword_for_tag(tag) or f"Tag {tag[0]:04X},{tag[1]:04X}"
+        entries.append({
+            "tag":        f"({tag[0]:04X},{tag[1]:04X})",
+            "name":       name,
+            "original":   original,
+            "anonymized": anonymized,
+            "action":     action,
+        })
+
+    return entries
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Preservation check — technical params + pixel data, for pipeline QA
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Tags that must be RETAINED unchanged by anonymization — acquisition,
+# scanner, and geometry parameters with no patient-identity content, plus
+# the now-retained patient characteristics. Checked by
+# _build_technical_preservation_check() as an internal pipeline QA step.
+# (dicom_verify.py's standalone TECHNICAL_TAGS covers the same idea for
+# the offline CLI verifier — kept as a separate list since one runs live
+# inside the pipeline and the other is a manually-invoked audit tool.)
+_TECHNICAL_TAGS: list[tuple[int, int]] = [
+    (0x0008, 0x0060),  # Modality
+    (0x0008, 0x0070),  # Manufacturer
+    (0x0008, 0x1090),  # ManufacturerModelName
+    (0x0018, 0x1020),  # SoftwareVersions
+    (0x0018, 0x0015),  # BodyPartExamined
+    (0x0018, 0x0060),  # KVP
+    (0x0018, 0x1150),  # ExposureTime
+    (0x0018, 0x1151),  # XRayTubeCurrent
+    (0x0018, 0x1152),  # Exposure
+    (0x0018, 0x1210),  # ConvolutionKernel
+    (0x0018, 0x0080),  # RepetitionTime
+    (0x0018, 0x0081),  # EchoTime
+    (0x0018, 0x1314),  # FlipAngle
+    (0x0018, 0x0087),  # MagneticFieldStrength
+    (0x0018, 0x0095),  # PixelBandwidth
+    (0x0018, 0x0020),  # ScanningSequence
+    (0x0018, 0x0021),  # SequenceVariant
+    (0x0018, 0x0023),  # MRAcquisitionType
+    (0x0018, 0x0050),  # SliceThickness
+    (0x0018, 0x0088),  # SpacingBetweenSlices
+    (0x0028, 0x0030),  # PixelSpacing
+    (0x0020, 0x0032),  # ImagePositionPatient
+    (0x0020, 0x0037),  # ImageOrientationPatient
+    (0x0020, 0x1041),  # SliceLocation
+    (0x0028, 0x0010),  # Rows
+    (0x0028, 0x0011),  # Columns
+    (0x0028, 0x0100),  # BitsAllocated
+    (0x0028, 0x0103),  # PixelRepresentation
+    (0x0028, 0x1052),  # RescaleIntercept
+    (0x0028, 0x1053),  # RescaleSlope
+    (0x0028, 0x1050),  # WindowCenter
+    (0x0028, 0x1051),  # WindowWidth
+    (0x0010, 0x1010),  # PatientAge
+    (0x0010, 0x1020),  # PatientSize
+    (0x0010, 0x1030),  # PatientWeight
+    (0x0010, 0x0040),  # PatientSex
+]
+
+
+def _build_technical_preservation_check(
+    before_ds: pydicom.Dataset,
+    after_ds: pydicom.Dataset,
+) -> list[dict]:
+    """
+    Compare *before_ds* and *after_ds* for every tag in _TECHNICAL_TAGS
+    that had a value in the original, flagging any that were lost or
+    altered. These tags carry no patient identity and must survive
+    anonymization unchanged.
+    """
+    import pydicom.datadict as dd
+
+    entries = []
+    for tag in _TECHNICAL_TAGS:
+        if tag not in before_ds:
+            continue
+        try:
+            original = str(before_ds[tag].value).strip()
+        except Exception:
+            continue
+        if not original:
+            continue
+
+        current = ""
+        if tag in after_ds:
+            try:
+                current = str(after_ds[tag].value).strip()
+            except Exception:
+                current = ""
+
+        name = dd.keyword_for_tag(tag) or f"Tag {tag[0]:04X},{tag[1]:04X}"
+        entries.append({
+            "tag":       f"({tag[0]:04X},{tag[1]:04X})",
+            "name":      name,
+            "original":  original,
+            "current":   current,
+            "preserved": (current == original),
+        })
+
+    return entries
+
+
+def _build_pixel_preservation_check(
+    before_ds: pydicom.Dataset,
+    after_ds: pydicom.Dataset,
+    scrubbing_expected: bool,
+) -> dict:
+    """
+    Compare pixel data between *before_ds* and *after_ds* — the same
+    instance, before anonymization and after the full pipeline (including
+    OCR pixel scrubbing, if it ran).
+
+    Accounts for legitimate scrubbing: if burned-in text was detected,
+    some pixels are EXPECTED to change (zeroed). This checks that geometry
+    and dtype survive intact, and that any change is a small, targeted
+    fraction of the image rather than wholesale corruption.
+    """
+    result = {
+        "scrubbing_expected": scrubbing_expected,
+        "shape_preserved":    None,
+        "dtype_preserved":    None,
+        "changed_fraction":   None,
+        "preserved":          False,
+        "note":               "",
+    }
+
+    try:
+        before_arr = before_ds.pixel_array
+        after_arr  = after_ds.pixel_array
+    except Exception as e:
+        result["note"] = f"Could not read pixel data for comparison: {e}"
+        return result
+
+    result["shape_preserved"] = bool(before_arr.shape == after_arr.shape)
+    result["dtype_preserved"] = bool(before_arr.dtype == after_arr.dtype)
+
+    if not result["shape_preserved"] or not result["dtype_preserved"]:
+        result["note"] = "Pixel array shape or dtype changed — unexpected regardless of scrubbing."
+        return result
+
+    import numpy as np
+    diff = before_arr != after_arr
+    changed_fraction = float(np.count_nonzero(diff)) / diff.size if diff.size else 0.0
+    result["changed_fraction"] = round(changed_fraction, 6)
+
+    if not scrubbing_expected:
+        result["preserved"] = (changed_fraction == 0.0)
+        result["note"] = (
+            "No burned-in text detected in sample — pixel data is byte-identical."
+            if result["preserved"] else
+            "No scrubbing was expected, but pixel data differs — investigate."
+        )
+    else:
+        # Some change is expected (scrubbed regions). Only flag if it's
+        # implausibly large for targeted text redaction — suggests
+        # corruption rather than scrubbing.
+        result["preserved"] = changed_fraction < 0.5
+        result["note"] = (
+            f"{changed_fraction * 100:.2f}% of pixels changed by OCR text scrubbing."
+            if result["preserved"] else
+            f"{changed_fraction * 100:.2f}% of pixels changed — unexpectedly large for text scrubbing alone."
+        )
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -613,9 +836,26 @@ def anonymize_study(
     uid_map = build_uid_map(first_ds)
     redacted_free_texts = build_redacted_free_texts(first_ds, clf)
 
-    # Extract window params from first instance for pixel scrubbing
-    wc = getattr(first_ds, "WindowCenter", None)
-    ww = getattr(first_ds, "WindowWidth",  None)
+    # ── Anchor instance for window params + technical/pixel preservation
+    # checks: the first instance that actually carries pixel data.
+    # first_inst itself may be a non-image object (Presentation State,
+    # Structured Report, Key Object Selection, RT Structure Set, etc.) —
+    # those have no WindowCenter/WindowWidth and no pixel array, so
+    # anchoring these checks to "literally instance #1" would silently
+    # produce a meaningless (or falsely-failing) result whenever a
+    # non-image object happens to sort first in the study. In the common
+    # case (first instance IS an image) this costs nothing extra.
+    anchor_ds   = first_ds if has_pixel_data(first_ds) else None
+    anchor_inst = first_inst if anchor_ds is not None else None
+    if anchor_ds is None:
+        for inst in all_instances[1:]:
+            candidate_ds = pydicom.dcmread(str(inst.path), force=True)
+            if has_pixel_data(candidate_ds):
+                anchor_ds, anchor_inst = candidate_ds, inst
+                break
+
+    wc = getattr(anchor_ds, "WindowCenter", None) if anchor_ds is not None else None
+    ww = getattr(anchor_ds, "WindowWidth",  None) if anchor_ds is not None else None
     if isinstance(wc, pydicom.multival.MultiValue):
         wc = float(wc[0])
     elif wc is not None:
@@ -630,18 +870,25 @@ def anonymize_study(
         print(f"  ...{orig[-20:]:>22}  ->  {anon}")
     print()
 
-    # ── OCR runs on every instance unconditionally ──
+    # ── OCR runs on every image-bearing instance ──
     # PS3.15 E.3.1 (Clean Pixel Data Option) requires that identifying
     # information is removed from pixel data regardless of how that is achieved.
     # Sampling only a subset of slices is non-compliant because burned-in
     # annotations may appear on specific frames (e.g. calibration slices,
     # last frame of a cine) not present in any fixed-size sample.
-    run_ocr = True
-    print("[INFO] OCR pixel scrubbing will run on all slices (PS3.15 E.3.1).")
+    # Non-image objects (Presentation States, SRs, KO docs, ...) have no
+    # pixel data, so they are skipped in the loop below.
+    run_ocr = anchor_ds is not None
+    if run_ocr:
+        print("[INFO] OCR pixel scrubbing will run on all image slices (PS3.15 E.3.1).")
+    else:
+        print("[INFO] No image-bearing instances in this study — skipping OCR entirely.")
     print()
 
     # ── Loop: apply to every instance ──
     files_written = 0
+    pii_audit: list[dict] = []
+    preservation_check: dict = {}
     sop_uid_to_filename: dict[str, str] = {}
     for idx, inst in enumerate(all_instances, 1):
         # Load full dataset including pixel data
@@ -650,9 +897,38 @@ def anonymize_study(
         # Apply all anonymization in-place
         _anonymize_dataset(ds, anon_patient_id, redacted_free_texts, uid_map)
 
-        #Apply OCR pixel scrubbing if burned-in text was found in sample
-        if run_ocr:
-            scrub_pixels(ds, ocr_reader, wc, ww)
+        # Apply OCR pixel scrubbing if burned-in text was found in sample —
+        # done BEFORE the before/after capture below so the checks reflect
+        # the actual final pixel state that gets written to disk. Skipped
+        # entirely for instances with no pixel data (non-image objects) —
+        # nothing to scrub, and _get_pixel_frames() would just fail.
+        # force_uncompressed=run_ocr: once a series is flagged for
+        # scrubbing, every instance in it gets normalized to an
+        # uncompressed transfer syntax, even ones where this particular
+        # slice has nothing to scrub — keeps the whole series on one
+        # consistent encoding rather than a per-slice mix, which tools
+        # expecting a single transfer syntax per series (e.g. dicom2nifti)
+        # can mishandle.
+        if run_ocr and has_pixel_data(ds):
+            scrub_pixels(ds, ocr_reader, wc, ww, force_uncompressed=run_ocr)
+
+        # PII audit compares against the study's first instance — identity
+        # tags (PatientName, PatientID, ...) are constant across every
+        # instance in a study regardless of modality, so first_ds is a
+        # valid "before" reference even if it's a non-image object.
+        if idx == 1:
+            pii_audit = _build_pii_audit(first_ds, ds)
+
+        # Technical/pixel preservation checks instead anchor to anchor_inst
+        # (the first instance with pixel data, may not be instance #1) —
+        # anchor_ds (loaded above, never mutated) is the "before", this
+        # fully-processed ds is the "after" for that same file.
+        if anchor_inst is not None and inst.sop_instance_uid == anchor_inst.sop_instance_uid:
+            preservation_check = {
+                "technical": _build_technical_preservation_check(anchor_ds, ds),
+                "pixel":     _build_pixel_preservation_check(anchor_ds, ds, scrubbing_expected=run_ocr),
+            }
+
         # Output filename = new SOPInstanceUID (no original info in filename)
         ds.BurnedInAnnotation = "NO"  # PS3.15 E.3.1 mandatory flag
         new_sop_uid = str(ds.SOPInstanceUID)
@@ -673,12 +949,14 @@ def anonymize_study(
     print(f"[INFO] Done. {files_written} anonymized files written to: {output_path}")
 
     return {
-        "anon_patient_id":  anon_patient_id,
-        "uid_map":          uid_map,
-        "redacted_tags":    {str(k): v for k, v in redacted_free_texts.items()},
-        "files_written":    files_written,
-        "output_dir":       str(output_path),
-        "sop_uid_to_filename":   sop_uid_to_filename
+        "anon_patient_id":     anon_patient_id,
+        "uid_map":             uid_map,
+        "redacted_tags":       {str(k): v for k, v in redacted_free_texts.items()},
+        "files_written":       files_written,
+        "output_dir":          str(output_path),
+        "sop_uid_to_filename": sop_uid_to_filename,
+        "pii_audit":           pii_audit,
+        "preservation_check":  preservation_check,
     }
 
 

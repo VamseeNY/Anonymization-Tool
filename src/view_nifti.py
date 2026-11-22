@@ -58,6 +58,9 @@ def inspect_and_plot(nifti_path: str, output_png: str = None) -> None:
     cal_min = float(hdr["cal_min"])
     cal_max = float(hdr["cal_max"])
 
+    print(cal_min)
+    print(cal_max)
+
     if cal_min == 0.0 and cal_max == 0.0:
         # No window set — use 2nd/98th percentile to avoid outlier stretching
         vmin = float(np.percentile(data, 2))
